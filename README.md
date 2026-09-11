@@ -42,15 +42,23 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 dsh plugin --profile <你的 profile> remove dsh-story-mode
 ```
 
-**模式跟着包一起走**，不需要任何清理命令——它从来没被复制到你家里去过。
+**模式与它自带的两份技能都跟着包一起走**，这两样不需要任何清理——它们从来没被复制到你家里去过。（模式住在包的 `presets/short-story/`，技能是 preset 用 `customSkillDirs` 从包内挂上去的，所以文风契约只在这个模式里可见。）
 
-唯一留在你机器上的是那份**全局技能**（`<DSH_HOME>/skills/writing-style-contract`）：技能的发现根是固定的，插件无法往里声明一个根，所以那一份是复制过去的。想让它在所有模式下生效就留着；想清掉：
+只有一件事要在卸载前确认：
 
 ```sh
-dsh-story-mode uninstall
+dsh plugin --profile <你的 profile> exec dsh-story-mode check
 ```
 
-（包已经被 remove 掉了、跑不起 CLI 时，直接删 `<DSH_HOME>/skills/writing-style-contract` 也可以。它带一个 `.dsh-story-mode.json` 归属标记，所以只删本包装的那一份永远不会误伤你手写的东西。）
+如果它提示「默认预设指向本模式」，先清理再卸载：
+
+```sh
+dsh plugin --profile <你的 profile> exec dsh-story-mode cleanup
+```
+
+为什么要跑：如果你在设置里把「短篇小说模式」设成了**默认模式**，卸载包之后新建会话会直接以 `agent-preset/not-found` 失败——DSH 找不到默认 preset 时不会回退到 `standard`，而真正会顺手清掉这个默认值的那条路径被 `dsh plugin remove` 绕过了。这一步必须在卸载**之前**做，因为包一旦 remove，这个命令也就没了。
+
+（`cleanup` 顺带清掉两处历史残留：v1.0.1 复制到 `<DSH_HOME>/.agent-presets/short-story` 的模式副本，以及 v1.0.1／v1.0.2 曾可选安装的 `<DSH_HOME>/skills/writing-style-contract` 副本——后者只在带 `.dsh-story-mode.json` 归属标记时才删，绝不会误伤你自己手写的同名技能。不是本包放的东西一律不动。）
 
 ### 一条命令的边界：它接管了官方那一行
 
@@ -70,7 +78,7 @@ dsh --profile <你的 profile> --dump-default-config
 dsh plugin --profile <你的 profile> exec dsh-story-mode check
 ```
 
-或者在新会话里让 agent 调用 `story_doctor` —— 它会逐项报告：包是否进了 bundles、`package.json` 是否可解析（带 BOM 会让 DSH 读不出 `dsh.bundle`）、patch 是否接管了那一行、包内模式是否通过框架自己的发现判定、技能是否过期。
+或者在新会话里让 agent 调用 `story_doctor` —— 它会逐项报告：包是否进了 bundles、`package.json` 是否可解析（带 BOM 会让 DSH 读不出 `dsh.bundle`）、patch 是否接管了那一行、包内模式是否通过框架自己的发现判定、文风契约是否已挂进 preset，以及卸载前需要注意的两处残留（默认预设 / 旧安装副本）。
 
 ### 其他安装方式
 
@@ -81,7 +89,7 @@ pnpm add -g github:Furry-wucheng/dsh-story-mode
 # 从源码目录直接开发（不装进 profile）
 git clone https://github.com/Furry-wucheng/dsh-story-mode
 cd dsh-story-mode && pnpm pack        # 得到一个 tgz
-dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.0.0.tgz
+dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.0.2.tgz
 ```
 
 ### 升级
@@ -90,7 +98,7 @@ dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.0.0.tgz
 dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 ```
 
-模式会跟着更新（它住在包里）。全局技能是复制过去的，需要时再跑一次 `dsh-story-mode install` 刷新——`story_doctor` 会告诉你它过期了。
+模式与两份技能都跟着更新——它们都住在包里，没有任何需要手动刷新的副本。
 
 ## 用它
 
@@ -142,9 +150,9 @@ dsh-story-mode/
   lib/index.js                      主入口：写作工具
   lib/doctor.js                     独立入口 dsh-story-mode/doctor：只注册 story_doctor
   lib/tool-kit.js                   零依赖的工具构造器与参数校验（两个入口共用）
-  skills/writing-style-contract/    文风契约（全局技能，需要手动落地）
-  bin/cli.mjs                       install / check / uninstall（只针对全局技能与旧安装清理）
-  scripts/install-links.mjs         实际干活的那份
+  skills/writing-style-contract/    文风契约（由 preset 挂进模式，只在这个模式里可见）
+  bin/cli.mjs                       check / cleanup（不安装任何东西，只做卸载前清理）
+  scripts/cleanup.mjs               实际干活的那份
 ```
 
 两个入口是 `exports` 子路径实现的同包多入口。`./doctor` 可以单独挂到**任何**模式里做诊断（例如创造模式），不必连带加载三个写作工具。
@@ -155,23 +163,24 @@ dsh-story-mode/
 
 这些都是查过框架源码、并且踩过之后才写下来的：
 
+- **技能根由 preset 自己声明，所以文风契约只在这个模式里生效。** 写作流程技能与文风契约分别是包内的 `presets/short-story/skills/` 与 `skills/`，都以「preset 文件所在目录」为基准解析（`!!js` 里的 `baseUrl`），注册落进本 preset 那一层，所以模式、流程技能、文风契约三者永远同进同出。它**故意不**放进 `<DSH_HOME>/skills`：那是用户根（rank 400），而每个 preset 自己挂的 skill-filesystem 实例都会扫它（`includeDefaultRoots` 默认 true）——放进去等于让它出现在所有模式里，包括编码会话，而它只属于写作模式。
 - **`ctx.agentPresets` 只允许发布一次**，所以一个插件**不能**只"追加自己的 roster 行"——官方行几乎总是存在（web-app bundle 提供它），两行不能共存。注入根就必须接管那一行，代价见上面「一条命令的边界」。
 - **`roots` 是整体替换而非增量合并。** 所以本包接管那一行时会把它自己的根写全；多个插件都要追加根时，这是框架层面的限制。
 - **根下的 `<id>` 条目必须是真实目录。** roster 的 `scanRoot` 用 `readdir().isDirectory()` 判定，**不跟随符号链接**。Windows 上 Node 把 junction 报成符号链接，于是链接形式的预设会被**静默跳过**，而 `stat()` 读文件却完全正常——本包早期版本正是栽在这里。（技能侧相反：`dsh-skill-filesystem` 会跟随链接一级。）
 - **`!!js` 后面是折叠标量，整段代码会压成一行。** 所以那段 JavaScript 里不能有 `//` 行注释（一个就吃掉后面全部），也不能靠自动分号插入。这两条都是实测踩出来的。
 - **`createRequire` 的锚点必须按文件 URL 给。** 给它一个不带尾斜杠的目录路径，Node 会把该目录当成文件解析，直接 MODULE_NOT_FOUND。
-- **`package.json` 不能有 BOM。** 带 BOM 会让 `JSON.parse` 失败，DSH 因此读不出 `dsh.bundle` 声明，`dsh plugin add` 不会把包加进 profile 的 bundles，patch 永远不生效——表现为"装好了但模式不出现"。这个坑本包也踩过一次，`__validate` 里有常驻检查。
+- **`package.json` 不能有 BOM。** 带 BOM 会让 `JSON.parse` 失败，DSH 因此读不出 `dsh.bundle` 声明，`dsh plugin add` 不会把包加进 profile 的 bundles，patch 永远不生效——表现为"装好了但模式不出现"。这个坑本包也踩过一次，`story_doctor` 里有常驻检查（`package.json 无 BOM` 那一项）。
 - **preset 行不能用 `!!js` 动态算路径。** 发现阶段确实支持 `!!js`，但紧随其后的形状检查要求每行的 `name` 是**字符串**；`!!js` 解析出来是对象，整份组成会被判为 broken。
 - **preset 行不能用裸包名**（从 harness 解析，到不了用户目录），所以组成里用相对引用 `../../lib/index.js`——以组合文件所在目录为基准，因此**没有任何机器相关的绝对路径**。
 - **本包零运行时依赖**（连 `schemastery` 都没有）。ESM 的解析基准是加载入口的父路径，所以插件若 `import` 任何 `@deepseek-ai/*` 包就必须自带 `node_modules`；它什么都不 import，于是任何布局下都能加载。**改代码时不要引入裸导入**，否则上面那条相对引用会失效。
 
 ### 安装会改动你的 home 目录吗
 
-**只有全局技能那一份。** `dsh plugin add` 本身不写你的 home：模式住在 profile 的 `node_modules` 里（也就是 pnpm 装包的地方）。
+**不会。** `dsh plugin add` 只写 profile 的 `package.json`、`node_modules` 与 patch 层：模式住在 profile 的 `node_modules` 里（也就是 pnpm 装包的地方），技能由 preset 从包内挂载。`<DSH_HOME>/skills/` 与 `<DSH_HOME>/.agent-presets/` 都不碰，也没有需要用户去批准的构建脚本（pnpm 默认就会拦截依赖的生命周期脚本，本包不依赖它）。
 
-如果你想要文风契约在所有模式下生效，跑一次 `dsh-story-mode install`，它只会在 `<DSH_HOME>/skills/writing-style-contract` 放一份副本，并带 `.dsh-story-mode.json` 归属标记。如果你已经有同名技能，它会拒绝覆盖（要覆盖用 `--force`），且卸载时绝不会碰不是它装的东西。
+`cleanup` 是唯一会写你 home 的命令，而且只**删**本包自己留下的东西：指向本模式的默认预设、v1.0.1 的模式副本、带 `.dsh-story-mode.json` 归属标记的技能副本。不是本包放的一律不动。
 
-**注意**：早期版本把模式**复制**进 `<DSH_HOME>/.agent-presets/`。升级后跑一次 `dsh-story-mode install` 会清掉那个残留——不清的话它会和 patch 声明的根撞 id，roster 可能解析到过期的那一份。
+**注意**：v1.0.1 把模式**复制**进 `<DSH_HOME>/.agent-presets/short-story`。那份副本会和 patch 声明的根撞 id，roster 只会认先扫到的那一个——留下过期的副本会让"改了包内文件但模式没变"发生。`check` 会报出来，`cleanup` 会清掉。
 
 ---
 
@@ -179,7 +188,7 @@ dsh-story-mode/
 
 `skills/writing-style-contract/SKILL.md` 是这个模式默认执行的写作标准，十二条：默认叙事风格、少用形容词与副词、禁止廉价比喻、对话写法、少用"他说+修饰语"、不解释已能看出的情绪、不主动总结心理、描写只留有用细节、不追求每句好看、避免 AI 节奏，以及交稿前的自查删减。
 
-作者在 `brief.md` 里给的风格要求覆盖它。
+它只在这个模式里可见——不会出现在编码会话的技能目录里。作者在 `brief.md` 里给的风格要求覆盖它。
 
 ---
 

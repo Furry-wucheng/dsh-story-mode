@@ -33,7 +33,7 @@
 
       **这是写作工作区，不是你的个人项目。** 只读、只改写作者让你改的文件。不要顺手创建 README、说明文档、目录索引、总结文件或任何作者没要的文件；不要重命名、移动或删除既有文件。需要新增文件时，先说明为什么需要。
 
-      先读 `short-story` 技能再动手。它规定了两种目标形态（短篇精修 / 系列连载）的识别方式、篇幅档位、四阶段流程与文风契约。写正文与改稿前读 `writing-style-contract` 技能——那是作者的文风标准，在所有模式下都生效，不限于这个模式。
+      先读 `short-story` 技能再动手。它规定了两种目标形态（短篇精修 / 系列连载）的识别方式、篇幅档位、四阶段流程与文风契约。写正文与改稿前读 `writing-style-contract` 技能——那是这个模式自带的文风标准，随本模式一起挂载，只在这里可见。
 
       两个不可省略的步骤：**先出接稿单与节拍表等作者确认，再落笔**；**写完必须按文风契约自查删减一遍**。这两步是流程，不是建议。
 
@@ -102,13 +102,26 @@
 # ── 技能 ────────────────────────────────────────────────────────────────────
 
 # 技能注册表在宿主组成里并按 scope 分层：这一行注册进本 preset 的那一层。
-# `customSkillDirs` 指向 preset 自己的 skills/ 目录，所以技能跟着 preset 走，
-# 复制或迁移 preset 时不会脱钩。
+# 两个根都以 preset 目录为基准算，所以技能跟着 preset 走，复制或迁移不会脱钩：
+#   `skills/`         模式内的写作流程技能（short-story）
+#   `../../skills/`   包根的文风契约——与 preset 同属一个包，所以必须一起挂进来
+#
+# 文风契约**只**从这里挂载：它不该出现在别的模式里。
+# `<DSH_HOME>/skills` 是用户根（skill-filesystem 里 rank 400 的 `user-dsh`），
+# 而每个 preset 自己挂的 skill-filesystem 实例都会扫它（`includeDefaultRoots`
+# 默认 true）——往那儿放一份，等于让文风契约出现在所有模式里，包括编码会话。
+# 本包因此不安装任何用户根副本；注册进本 preset 这一层才是正确的作用域。
+#
+# 为什么必须显式挂 `../../skills/`：persona 与 short-story 技能都要求动笔前读它，
+# 缺了这一行，模型第一次 `skill` 调用就会得到
+# `skill "writing-style-contract" is unknown or no longer available`，再花一整轮
+# 去翻文件系统找一个根本不存在的路径。`story_doctor` 会检查这一行在不在。
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
   config:
     customSkillDirs:
       - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('../../skills/', baseUrl))"
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'

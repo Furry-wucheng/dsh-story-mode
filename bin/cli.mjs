@@ -1,25 +1,39 @@
 #!/usr/bin/env node
 /**
- * `dsh-story-mode` 命令行。
+ * `dsh-story-mode` 命令行：卸载前清理与自检。
  *
- * 存在的理由是一个实测事实：**pnpm 默认忽略依赖的 postinstall 脚本**
- * （报 `ERR_PNPM_IGNORED_BUILDS`，需要用户手动 `pnpm approve-builds` 才放行）。
- * 所以"装完自动落地"这条路在 pnpm 下不成立。与其让用户去批准一个构建脚本
- * ——那是供应链风险习惯，不该为了省一条命令而养成——不如把落地做成一条
- * 显式命令：可见、可控、可重复。
+ * **它不安装任何东西。** 模式住在包里（`presets/short-story/`），由
+ * `cordis.patch.yml` 在 profile 合成配置时声明为 roster 的根；文风契约由 preset
+ * 的 `customSkillDirs` 从包内挂载。`dsh plugin add` 一步就完整可用，
+ * `dsh plugin remove` 一步就全部消失。
+ *
+ * 文风契约**故意不**落地到 `<DSH_HOME>/skills`：那是用户根，每个 preset 的
+ * skill-filesystem 实例都会扫它，放进去等于让它出现在所有模式里（包括编码
+ * 会话）。这个技能只属于写作模式，所以只从 preset 那一层挂载。
+ *
+ * 那这个命令为什么还在？因为有三件事 `dsh plugin remove` 管不到：
+ *
+ *   1. **悬空的默认预设**。把「短篇小说模式」设成默认模式之后再 remove，
+ *      新建会话会以 `agent-preset/not-found` 直接失败——`resolve()` 没有回退，
+ *      而会顺手清掉这个默认值的 `AgentPresets.remove()` 被卸载绕过了。
+ *      这件事**必须在卸载前**做：包一旦 remove，这个命令也就没了。
+ *   2. **v1.0.1 的模式副本**（`<DSH_HOME>/.agent-presets/short-story`）。
+ *   3. **v1.0.1／v1.0.2 可能放过的用户根副本**（只删带本包归属标记的那一份）。
  *
  * 用法：
- *   dsh-story-mode install     落地：把包内的模式与技能复制到 DSH 的发现根
- *   dsh-story-mode check       只检查，不改动；有内容待落地/待刷新时以 1 退出
- *   dsh-story-mode uninstall   移除已落地的内容
+ *   dsh-story-mode check       只检查，不改动；有待清理项时以 1 退出
+ *   dsh-story-mode cleanup     清理上面三项（不删不是本包放的东西）
  *   dsh-story-mode help        帮助
  *
  * 选项：
  *   --dsh-home <路径>   覆盖 DSH 主目录（默认取 $DSH_HOME，否则 ~/.dsh）
- *   --force             覆盖已存在但不是本包落地的内容
  *
- * 也可以用 pnpm 直接跑，不必全局安装：
- *   pnpm dlx dsh-story-mode install
+ * 包作为 profile 依赖安装时 bin 不在 PATH 上，用官方转发形式：
+ *   dsh plugin --profile <name> exec dsh-story-mode check
+ *   dsh plugin --profile <name> remove dsh-story-mode
+ *
+ * 或者直接跑脚本（story_doctor 会打印本机上的确切路径）：
+ *   node "<包目录>/scripts/cleanup.mjs" [--check]
  */
 import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
@@ -27,7 +41,7 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = dirname(HERE)
-const INSTALLER = join(PACKAGE_ROOT, 'scripts', 'install-links.mjs')
+const CLEANUP = join(PACKAGE_ROOT, 'scripts', 'cleanup.mjs')
 
 /** 吃掉 `--dsh-home <路径>`，其余参数当作子命令与标志。 */
 function splitArgs(argv) {
@@ -51,70 +65,53 @@ function splitArgs(argv) {
 
 const HELP = `dsh-story-mode —— 短篇小说模式（DeepSeek Harness）
 
+这个命令不安装任何东西：装包之后 preset 住在包里、技能由 preset 从包内挂载，
+新建会话就能在模式选择器里选「短篇小说模式」；卸载包，模式和两份技能一起消失。
+
+它只做三件 dsh plugin remove 管不到的事（详见 scripts/cleanup.mjs 的文件头）：
+  1. 清掉指向本模式的**默认预设**——不清的话，卸载后新建会话会直接
+     以 agent-preset/not-found 失败。这一条必须在卸载**前**跑。
+  2. 清掉 v1.0.1 复制到 <DSH_HOME>/.agent-presets/short-story 的模式副本。
+  3. 清掉 v1.0.1／v1.0.2 可能放在 <DSH_HOME>/skills/writing-style-contract 的
+     副本（带本包归属标记时才删），让文风契约只留在写作模式里。
+
 用法：
-  dsh-story-mode install       落地：把包内的模式与技能复制到 DSH 的发现根
-  dsh-story-mode check         只检查，不改动；有内容待落地或待刷新时以 1 退出
-  dsh-story-mode uninstall     移除已落地的内容
-  dsh-story-mode help          显示这段帮助
+  dsh-story-mode check       只检查，不改动；有待清理项时以 1 退出
+  dsh-story-mode cleanup     执行清理（不删不是本包放的东西）
+  dsh-story-mode help        显示这段帮助
 
 选项：
-  --dsh-home <路径>            覆盖 DSH 主目录（默认 $DSH_HOME 或 ~/.dsh）
-  --force                      覆盖已存在但不是本包落地的内容
+  --dsh-home <路径>          覆盖 DSH 主目录（默认 $DSH_HOME 或 ~/.dsh）
 
-安装（官方方式）：
-  dsh plugin --profile <name> add github:<你>/dsh-story-mode
-  dsh plugin --profile <name> exec dsh-story-mode install
+推荐顺序——先清理，再卸载：
+  dsh plugin --profile <name> exec dsh-story-mode check
+  dsh plugin --profile <name> exec dsh-story-mode cleanup
+  dsh plugin --profile <name> remove dsh-story-mode
 
-为什么还需要第二行：
-  DSH 只在两个固定位置发现东西——<DSH_HOME>/.agent-presets/<id>/（模式）和
-  <DSH_HOME>/skills/<name>/（技能）。插件安装体系（dsh plugin add →
-  profile → bundle patch）只能往**宿主组成**插行，而模式是**文件**、由 roster
-  从文件系统根发现——插件在结构上无法发布一个模式。所以这一步把包内的模式与
-  技能**复制**到那两个位置。（升级包之后重跑一次即可刷新。）
-
-  为什么是复制而不是符号链接：实测框架两处发现机制的判定不一致——
-    * 模式：dsh-agent-presets 用 readdir().isDirectory() 判定候选，
-      **不跟随链接**。Windows 上 Node 把 junction 报成符号链接，条目被直接跳过，
-      模式不会出现在选择器里（而 stat() 读得到，所以看起来像"装好了没生效"）。
-    * 技能：dsh-skill-filesystem 会跟随符号链接一级，链接本来能用。
-  为了让两处行为一致、安装状态看得见，两者都复制。
-
-install 是可重复执行的：内容一致就什么都不做，不一致才刷新。
-本包旧版本用链接安装，install 会自动接管并换成真实目录。
-
-卸载要两步（框架没有安装/卸载钩子，只能显式做）：
-  1. dsh-story-mode uninstall                       移除已落地的内容
-  2. dsh plugin --profile <name> remove dsh-story-mode
-  只做第 2 步的话，模式会留在发现根里，看起来"卸载了但还在"。
-
-装好之后：新建一个会话，在模式选择器里选「短篇小说模式」——不需要重启 DSH。
-在会话里可以让 agent 调用 story_doctor 做一次自检。
+在会话里可以让 agent 调用 story_doctor 做一次只读自检。
 `
 
 const { rest, dshHome } = splitArgs(process.argv.slice(2))
 const command = rest[0] ?? 'help'
-const force = rest.includes('--force')
 
 const env = { ...process.env }
 if (dshHome !== undefined) env.DSH_HOME = dshHome
 
-/** 把安装器的退出码原样带出去，脚本化使用才可靠。 */
-function runInstaller(flags = []) {
-  const result = spawnSync(process.execPath, [INSTALLER, ...flags], { stdio: 'inherit', env })
+/** 把清理脚本的退出码原样带出去，脚本化使用才可靠。 */
+function runCleanup(flags = []) {
+  const result = spawnSync(process.execPath, [CLEANUP, ...flags], { stdio: 'inherit', env })
   process.exit(result.status ?? 1)
 }
 
 switch (command) {
-  case 'install':
-    runInstaller(force ? ['--force'] : [])
-    break
   case 'check':
   case 'doctor':
-    runInstaller(['--check'])
+    runCleanup(['--check'])
     break
+  case 'cleanup':
   case 'uninstall':
   case 'remove':
-    runInstaller(['--uninstall'])
+    runCleanup()
     break
   case 'help':
   case '--help':
