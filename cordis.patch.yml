@@ -1,0 +1,49 @@
+# dsh-story-mode bundle patch
+#
+# 这个文件是 `dsh.bundle.patch` 层。装法：
+#
+#   dsh plugin --profile <name> add github:Furry-wucheng/dsh-story-mode
+#
+# `dsh plugin` 把包装进 profile 的 node_modules 并加进 `dsh.profile.bundles`；
+# profile 启动时合并本层。**不需要任何后续命令。**
+#
+# ── 这个 patch 做什么 ───────────────────────────────────────────────────────
+#
+# 本包的模式住在包里（`presets/short-story/`）。DSH 的 roster 只从固定的文件
+# 系统根发现预设，所以这里给 roster 追加一个指向本包 `presets/` 的根。
+#
+# 难点是「包被装到哪」在发布时不可能知道。解法：在 `!!js` 里用 `createRequire`
+# 在**运行时**问出来。社区插件（dsh-TUI）用的也是这一招。
+#
+# ── 为什么是覆写 `agent-presets` 行，而不是插入自己的行 ─────────────────────
+#
+# 试过插入独立的行 + 自我退让（`disabled` 表达式），结论是不行：
+# `ctx.agentPresets` 只允许发布一次，所以两行不可能共存；而官方行几乎总是存在
+# （web-app bundle 提供它，标准 profile 都带），于是独立行永远退让、模式永远
+# 不出现。注入根就必须接管那一行。
+#
+# 桌面宿主自己就是这么做的：它读回 `agent-presets` 行的 config，把
+# `<runtime>/config/agent-presets` 追加进 `roots`，再压成一个新层。
+#
+# **代价必须写在这里**：补丁按 id **整体替换** `config`，所以下面把四个字段
+# 全部重述了一遍。将来官方给这一行加新字段，本包会静默把它抹掉——升级 DSH 之后
+# 请对照 `dsh --profile <name> --dump-default-config` 检查这一行。
+# `story_doctor` 也会对照检查这一点。
+#
+# 另外：`roots` 是**整体替换**而非增量合并，所以本包会挤掉部署自己配置的根
+# （桌面宿主注入的那个）。shipped 预设不受影响——它们由 `includeShippedRoot`
+# 带进来，不占 `roots`。
+#
+# ── 写下面那段代码前必须知道的三件事（都是实测踩出来的）─────────────────────
+#
+#   1. `!!js` 后面用折叠标量 `>-`，整段代码会被压成**一行**。所以下面的
+#      JavaScript 写成**单行、语句间全带分号**的形式：
+#        · 不能有 `//` 行注释——一个就够把后面全部注释掉；
+#        · 不能靠自动分号插入——`const a = 1` 紧跟 `const b = 2` 会是语法错误。
+#   2. `createRequire` 的锚点必须按**文件 URL** 给。给它一个不带尾斜杠的目录
+#      路径，Node 会把该目录当成文件解析，直接 MODULE_NOT_FOUND。
+#   3. 只用求值环境给的两个东西：`ctx.baseUrl` 与 process 全局。
+
+- id: agent-presets
+  config: !!js >-
+    (() => { const req = process.getBuiltinModule('node:module').createRequire(new URL('package.json', ctx.baseUrl)); const path = process.getBuiltinModule('node:path'); const fs = process.getBuiltinModule('node:fs'); const base = { default: 'standard', includeShippedRoot: true, includeUserRoot: true }; try { const root = path.dirname(req.resolve('dsh-story-mode/package.json')); const presetRoot = path.join(root, 'presets'); if (fs.existsSync(presetRoot)) { return { ...base, roots: [{ path: presetRoot, trust: 'user' }] }; } } catch {} return base; })()

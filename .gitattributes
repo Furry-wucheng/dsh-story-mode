@@ -1,0 +1,11 @@
+# 统一按 LF 存库。
+#
+# 本包里有大量中文文本（组成、技能、README），而 Windows 上 git 默认会把 LF
+# 换成 CRLF。那些文件会被 DSH 直接解析，换行符在 YAML frontmatter 和组成文件里
+# 都不是"无所谓"的——统一成 LF 可以避免"我这里好好的，你那里解析失败"。
+* text=auto eol=lf
+
+# 二进制不要碰
+*.png binary
+*.jpg binary
+*.tgz binary

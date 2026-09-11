@@ -1,0 +1,58 @@
+{
+  "name": "dsh-story-mode",
+  "version": "1.0.0",
+  "description": "DSH 短篇小说模式：一个包内含整套能力——agent preset（模式）、写作流程技能、文风契约技能、四个结构化工具。一条命令安装，卸载即拔。",
+  "type": "module",
+  "main": "lib/index.js",
+  "bin": {
+    "dsh-story-mode": "bin/cli.mjs"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./doctor": "./lib/doctor.js",
+    "./tool-kit": "./lib/tool-kit.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "install-links": "node scripts/install-links.mjs",
+    "check": "node scripts/install-links.mjs --check"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "presets",
+    "skills",
+    "scripts",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "agent-preset",
+    "writing",
+    "fiction",
+    "short-story",
+    "creative-writing"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Furry-wucheng/dsh-story-mode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Furry-wucheng/dsh-story-mode/issues"
+  },
+  "homepage": "https://github.com/Furry-wucheng/dsh-story-mode#readme",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  }
+}

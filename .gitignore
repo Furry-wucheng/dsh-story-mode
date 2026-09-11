@@ -1,0 +1,5 @@
+node_modules/
+*.log
+.DS_Store
+# 接线安装器会把「被替换掉的真实副本」挪到一边留证，那些不该进版本库
+*.replaced-*

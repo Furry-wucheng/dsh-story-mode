@@ -1,0 +1,172 @@
+# 短篇小说模式 —— 一个"写作专用"的 agent preset。
+#
+# 这个文件属于 `dsh-story-mode` 包，路径是包内的 `presets/short-story/agent.cordis.yml`。
+# 它**住在包里**：包的 `cordis.patch.yml` 在运行时用 `createRequire(ctx.baseUrl)`
+# 问出本包装在哪，并把 `presets/` 目录声明为 roster 的一个根。
+#
+# 所以没有"复制到 `.dsh`"这一步，也没有需要手动跑的清理：卸载包，模式自动消失。
+#
+# 注意根目录**本身**必须是真实目录，因为 `scanRoot` 用
+# `readdir().isDirectory()` 判定根下的每个 `<id>` 条目、**不跟随符号链接**——
+# 链接形式的预设会被静默跳过。放在包内天然满足这一条。
+#
+# 与 `standard` 的差别不是"少几个工具"，而是换了交付物：这里没有编译器，
+# 唯一的裁判是人。所以本文件做三件事：
+#   1. 换掉人设：从编码 agent 变成接稿的短篇小说作者（persona 行）。
+#   2. 拆掉验证环：shell / 计划模式 / 后台任务 / 工作流 / 多级委派全部去掉。
+#      写小说不需要"跑一下看看"，留着只会把会话拖回工程节奏。
+#   3. 补上写作环：包内自带的 short-story 技能 + 面向长正文的精确编辑工具。
+#
+# 交付物是磁盘上的稿件，不是聊天里的回复——这条约定写在 persona 里，
+# 也写在技能里，因为它是这个模式全部价值的前提。
+
+# ── 身份 ────────────────────────────────────────────────────────────────────
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    suffix: 你的工作目录是 {{cwd}}。
+    prefix: |-
+      你是一位短篇小说作者，擅长细腻的情感描写、人物的内心世界与微妙的人际关系。你由 {{model}} 驱动，运行在 DeepSeek Harness 上。
+
+      进入这个模式意味着你不再是编码 agent：这里没有构建、测试或类型检查，唯一的读者是人。所以你的交付物是**磁盘上的稿件文件**，不是聊天里的回复。正文一律先落盘，再用一两句话向作者汇报你做了什么、以及哪里你拿不准。
+
+      **这是写作工作区，不是你的个人项目。** 只读、只改写作者让你改的文件。不要顺手创建 README、说明文档、目录索引、总结文件或任何作者没要的文件；不要重命名、移动或删除既有文件。需要新增文件时，先说明为什么需要。
+
+      先读 `short-story` 技能再动手。它规定了两种目标形态（短篇精修 / 系列连载）的识别方式、篇幅档位、四阶段流程与文风契约。写正文与改稿前读 `writing-style-contract` 技能——那是作者的文风标准，在所有模式下都生效，不限于这个模式。
+
+      两个不可省略的步骤：**先出接稿单与节拍表等作者确认，再落笔**；**写完必须按文风契约自查删减一遍**。这两步是流程，不是建议。
+
+      你的文风偏好排在作者之后：作者在接稿单或当场给出的语气、视角、禁忌，优先于技能里的默认风格。
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 32768
+
+# ── 文件读写 ────────────────────────────────────────────────────────────────
+#
+# read / write / edit 套件。注册进宿主 tools 注册表，本身不发布服务，因此
+# 不需要 realm；`fs` 服务与其策略留在宿主组成里。
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+# ── 面向长正文的精确编辑器 ──────────────────────────────────────────────────
+#
+# `str_replace_editor` 对散文比 `edit` 更合适：view 返回带行号正文，
+# str_replace 要求唯一字面量匹配（拒绝 0 处或多处命中，因此不会误改），
+# insert 按边界插行。改稿时这是主要工具。
+
+- id: tool-str-replace-editor
+  name: '@deepseek-ai/dsh-tool-str-replace-editor'
+  config:
+    maxOutputChars: 24000
+
+# ── 结构与一致性检查（本包自带的持久插件）──────────────────────────────────
+#
+# 指向**同一个包里**的 `lib/index.js`：story_wordcount / story_lint /
+# story_bible / story_doctor。中文字数与专名一致性不该靠模型"感觉"，
+# 交给确定性代码。
+#
+# 引用写成相对路径 `../../lib/index.js`，这正是为了可移植：
+#   * 相对引用以「组合文件所在目录」为基准（`PresetTree.import` 里
+#     `classifyRowSpecifier` 判为 `preset` 类型，交给 `super.import` 用本目录
+#     解析）。本文件住在 `presets/short-story/` 里，而入口在包根的 `lib/`，所以是 `../../lib/`；
+#   * 于是这份文件里**没有任何机器相关的绝对路径**——换一台机器、换一个
+#     安装位置、换一个 DSH_HOME，这行都不用改。
+#
+# 为什么不能用裸包名：裸包名从 harness 解析，而 preset 装在用户目录下，
+# Node 的 node_modules 向上查找到不了 harness 自己的依赖。
+# 为什么不能用 `!!js` 动态算路径：发现阶段确实支持 `!!js`（用 loader 的 YAML
+# 方言解析），但紧随其后的形状检查要求每行 `name` 是字符串，`!!js` 解析出来
+# 是对象，整份组成会被判为 broken。
+#
+# 这行能工作还有一个前提：**插件零运行时依赖**。ESM 的解析基准是加载入口的
+# 父路径，所以插件若 import 任何 `@deepseek-ai/*` 包，就必须自带 node_modules；
+# 而它什么都不 import（连 schemastery 都没有），于是任何布局下都能加载。
+# 这是刻意的设计，改动时不要引入裸导入。
+#
+# 该行解析不到文件时，整个 preset 会变成 broken 行——这是想要的行为：
+# 宁可 roster 报错，也不要一个工具悄悄消失的模式。用 story_doctor 可随时自检。
+- id: story-tools
+  name: '../../lib/index.js'
+  config:
+    # 场景配额偏离多少个百分点才在报告里点出来。
+    sceneDriftPercent: 15
+    dialogueLowPercent: 20
+    dialogueHighPercent: 70
+    # 同一个双字词在一段叙述里出现几次算过度重复。
+    repeatThreshold: 3
+
+# ── 技能 ────────────────────────────────────────────────────────────────────
+
+# 技能注册表在宿主组成里并按 scope 分层：这一行注册进本 preset 的那一层。
+# `customSkillDirs` 指向 preset 自己的 skills/ 目录，所以技能跟着 preset 走，
+# 复制或迁移 preset 时不会脱钩。
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - !!js "process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/', baseUrl))"
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── 上下文压缩 ──────────────────────────────────────────────────────────────
+#
+# 一部中短篇正文加设定很容易把上下文吃满。`compaction-basic` 读
+# `toolResultPrune`（用 ctx.get），所以裁剪器必须与它共享 realm。
+# tokenMeter 刻意不放进这个 realm：它属于宿主，浏览器读的上下文计量单位挂在它上面。
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── 委派：只留一个短篇审读用的子代理 ────────────────────────────────────────
+#
+# `subagents` 注册表与 spawn 后端在宿主组成里，这里只贡献工具行。
+# 写作模式不需要工作流、Ralph 循环或 fork——那些是编码模式的重武器。
+
+- id: tool-subagent
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent
+    backgroundMode: one-shot
+
+# ── 其余面向模型的工具 ──────────────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+# 长程写作目标（"把这部长篇写完"）与跨回合推进。
+- id: command-goal
+  name: '@deepseek-ai/dsh-command-goal'
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# `web` 服务与搜索提供方留在宿主；这里只有面向模型的工具。写实题材要查证细节时用。
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000
+
+# 稿件作为交付物呈现给作者。
+- id: present
+  name: '@deepseek-ai/dsh-tool-present'
