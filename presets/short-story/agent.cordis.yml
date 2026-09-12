@@ -15,7 +15,9 @@
 #   1. 换掉人设：从编码 agent 变成接稿的短篇小说作者（persona 行）。
 #   2. 拆掉验证环：shell / 计划模式 / 后台任务 / 工作流 / 多级委派全部去掉。
 #      写小说不需要"跑一下看看"，留着只会把会话拖回工程节奏。
-#   3. 补上写作环：包内自带的 short-story 技能 + 面向长正文的精确编辑工具。
+#   3. 补上写作环：包内自带的 short-story 技能 + 面向长正文的精确编辑工具
+#      + 搜索（glob / grep，见下面 tool-fs-search 那段：它不在"拆掉"那一类里，
+#      因为跨篇核对名字与细节是写作本身的一部分）。
 #
 # 交付物是磁盘上的稿件，不是聊天里的回复——这条约定写在 persona 里，
 # 也写在技能里，因为它是这个模式全部价值的前提。
@@ -51,6 +53,20 @@
 
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
+
+# ── 找文件与找文本 ──────────────────────────────────────────────────────────
+#
+# glob / grep。写作模式砍掉了 shell，但没有"搜"这件事撑着，改稿会退化成
+# 通读：系列连载里"上一章那把伞在第几场出现过""这个名字有没有写错"是很常见
+# 的问题，而这些只能靠搜，不能靠读。
+#
+# 注意 `sampleOverCapGlobResults` 在这条配置里是**必填**（schema 是
+# `z.boolean().required()`），漏了它这一行会让整个 preset 挂不上。
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
 
 # ── 面向长正文的精确编辑器 ──────────────────────────────────────────────────
 #
@@ -96,7 +112,8 @@
     sceneDriftPercent: 15
     dialogueLowPercent: 20
     dialogueHighPercent: 70
-    # 同一个双字词在一段叙述里出现几次算过度重复。
+    # 同一个双字词在**一段**叙述里出现几次算过度重复（按段计，不是全文累计——
+    # 全文口径会把"自己/什么/一个"这类常用词全报出来）。
     repeatThreshold: 3
 
 # ── 技能 ────────────────────────────────────────────────────────────────────
@@ -141,6 +158,11 @@
   config:
     - id: compaction-basic
       name: '@deepseek-ai/dsh-compaction-basic'
+
+    # 人类侧的 /compact。中短篇写到大半时上下文会满，自动压缩的时机未必是作者
+    # 想要的时机——能在场景之间手动压一次，比被迫在半句话里被折掉好。
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
 
     - id: tool-result-pruner
       name: '@deepseek-ai/dsh-compaction-tool-result-pruner'

@@ -28,7 +28,7 @@
 dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 ```
 
-**就这一条。** 不需要第二步、不需要改任何配置文件、不需要重启 DSH。装完新建会话，模式选择器里就有「短篇小说模式」。
+**就这一条。** 不需要第二步、不需要改任何配置文件。装完新建会话，模式选择器里就有「短篇小说模式」。（CLI 启动的 profile 下当场生效；桌面版若没看到，重启一次 DSH——它的 profile 组装只在启动与插件状态变更时跑，没有监听 bundles 的 watcher。）
 
 ### 它是怎么做到的
 
@@ -64,11 +64,15 @@ dsh plugin --profile <你的 profile> exec dsh-story-mode cleanup
 
 `ctx.agentPresets` 这个服务只允许发布一次，所以本包**不能**另插一行——那样会和官方行冲突，只能有一方生效。所以它覆写官方 `agent-presets` 行的 `config`，保留 `default: standard` 并把本包的 `presets/` 追加为根。
 
-**代价必须知道**：补丁按 id **整体替换** `config`。升级 DSH 之后，如果官方给这一行加了新字段，本包会静默抹掉它。对照检查：
+**代价必须知道**：补丁按 id 覆盖 `config`。升级 DSH 之后，如果官方给这一行加了新字段，本包会静默抹掉它。对照检查：
 
 ```sh
 dsh --profile <你的 profile> --dump-default-config
 ```
+
+**桌面版对同一行也压了一层，而且在本包之后**：它读回合成后的 config，写成 `roots = [<dsh-agent-presets 包>/presets(system), <DSH_HOME>/.agent-presets(user)]` 加 `includeUserRoot: false`。本包没被它盖掉，靠的是本包 `config` 是**一个** `!!js` 表达式——落地后它是 `{ __jsExpr: … }` 标记，桌面那层展开会把这个标记一起带上，而 Loader 的 `interpolate()` 先看整体：`isJsExpr` 命中就整体求值返回，后加的 `roots` 被丢弃。
+
+**这不是"稳"，是"恰好"**：如果把这一行的 config 改成"普通映射 + 内层 `!!js` 算路径"，桌面那层就会反过来盖掉 `roots`，模式会**静默消失**且没有任何报错。改这一行前请先读 `cordis.patch.yml` 里的对应段落。
 
 `story_doctor` 也会替你盯这一点。将来若多个插件都需要追加根，这是框架层面的限制（`roots` 不是增量合并的）——届时该由 DSH 提供追加语义，而不是每个插件各自覆写。
 
@@ -89,7 +93,7 @@ pnpm add -g github:Furry-wucheng/dsh-story-mode
 # 从源码目录直接开发（不装进 profile）
 git clone https://github.com/Furry-wucheng/dsh-story-mode
 cd dsh-story-mode && pnpm pack        # 得到一个 tgz
-dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.0.2.tgz
+dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.0.3.tgz
 ```
 
 ### 升级
@@ -134,8 +138,8 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 
 | 工具 | 做什么 |
 |---|---|
-| `story_wordcount` | 口径字数、场景配额与偏离、对话占比、最长段落、叙述段里的重复双字词 |
-| `story_lint` | 文风契约的八条确定性检查（模板化比喻、心理总结、解释情绪、提示语过密、情绪修饰提示语、视角滑移、AI 节奏、填充副词），带行号与契约锚点 |
+| `story_wordcount` | 口径字数、场景配额与偏离、对话占比、最长段落、**同一段内**的重复双字词 |
+| `story_lint` | 文风契约的八条确定性检查（模板化比喻、心理总结、解释情绪、提示语过密、情绪修饰提示语、视角滑移、AI 节奏、填充副词）。提示语只在一行确有引号时才计；视角只读引号外的叙述，传 `pov`（接稿单里的视角）时严判人称混用 |
 | `story_bible` | 解析人物卡（别名、缺 身份/动机/关系 字段）、跨文件提及次数、正文提到但没卡的名字、术语表 |
 | `story_doctor` | 安装自检：模式是否落地、内容是否过期、`roster` 能否发现它 |
 
@@ -164,6 +168,7 @@ dsh-story-mode/
 这些都是查过框架源码、并且踩过之后才写下来的：
 
 - **技能根由 preset 自己声明，所以文风契约只在这个模式里生效。** 写作流程技能与文风契约分别是包内的 `presets/short-story/skills/` 与 `skills/`，都以「preset 文件所在目录」为基准解析（`!!js` 里的 `baseUrl`），注册落进本 preset 那一层，所以模式、流程技能、文风契约三者永远同进同出。它**故意不**放进 `<DSH_HOME>/skills`：那是用户根（rank 400），而每个 preset 自己挂的 skill-filesystem 实例都会扫它（`includeDefaultRoots` 默认 true）——放进去等于让它出现在所有模式里，包括编码会话，而它只属于写作模式。
+- **写作模式保留了搜索工具（`glob` / `grep`）。** shell、计划模式、后台任务、工作流、多级委派都拆掉了，但"找"不能拆：系列连载里核对名字与细节靠搜，不靠通读。这一行要注意 `sampleOverCapGlobResults` 在 framework 侧是**必填**配置（`z.boolean().required()`），漏了它整个 preset 会挂不上。
 - **`ctx.agentPresets` 只允许发布一次**，所以一个插件**不能**只"追加自己的 roster 行"——官方行几乎总是存在（web-app bundle 提供它），两行不能共存。注入根就必须接管那一行，代价见上面「一条命令的边界」。
 - **`roots` 是整体替换而非增量合并。** 所以本包接管那一行时会把它自己的根写全；多个插件都要追加根时，这是框架层面的限制。
 - **根下的 `<id>` 条目必须是真实目录。** roster 的 `scanRoot` 用 `readdir().isDirectory()` 判定，**不跟随符号链接**。Windows 上 Node 把 junction 报成符号链接，于是链接形式的预设会被**静默跳过**，而 `stat()` 读文件却完全正常——本包早期版本正是栽在这里。（技能侧相反：`dsh-skill-filesystem` 会跟随链接一级。）

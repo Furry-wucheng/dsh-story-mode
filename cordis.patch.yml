@@ -22,17 +22,34 @@
 # （web-app bundle 提供它，标准 profile 都带），于是独立行永远退让、模式永远
 # 不出现。注入根就必须接管那一行。
 #
-# 桌面宿主自己就是这么做的：它读回 `agent-presets` 行的 config，把
-# `<runtime>/config/agent-presets` 追加进 `roots`，再压成一个新层。
+# 桌面宿主对同一行也压了一层（`prepareDesktopProfile`）：它读回**合成后**的行
+# config，写成 `{ ...config, roots: [<dsh-agent-presets 包>/presets(trust system),
+# <DSH_HOME>/.agent-presets(trust user)], includeUserRoot: false }`；这一层在
+# bundle 层**之后**应用，也就是本包这一层之后。
 #
-# **代价必须写在这里**：补丁按 id **整体替换** `config`，所以下面把四个字段
-# 全部重述了一遍。将来官方给这一行加新字段，本包会静默把它抹掉——升级 DSH 之后
-# 请对照 `dsh --profile <name> --dump-default-config` 检查这一行。
+# ── 那本包为什么还赢：`!!js` 标记会吞掉整份 config ──────────────────────────
+#
+# 因为下面的 `config` 是**一个** `!!js` 表达式：patch 落地后它是标记对象
+# `{ __jsExpr: '…' }`。桌面那层 `{ ...config, roots, includeUserRoot }` 展开时
+# 会把 `__jsExpr` 一起带上，于是最终 config 里**同时**有 `__jsExpr` 和
+# `roots` / `includeUserRoot`。
+#
+# Loader 求值时 `interpolate()` **先看整体**：
+#   isJsExpr(v) === v instanceof Object && '__jsExpr' in v
+# 命中就 `evaluate(v.__jsExpr)` 并**整体返回结果**——后加的那些键（桌面的
+# `roots`、`includeUserRoot: false`）随之被丢弃。所以并不是"`roots` 增量合并
+# 失败"，而是桌面那一层的键被本包的表达式整个吞掉。
+#
+# **这条很脆，改之前必须先读上面这段。** 让本包在桌面部署上出现的唯一原因就是
+# "整份 config 是一个 `!!js` 表达式"。哪天把它改成"普通映射 + 内层 `!!js` 算
+# 路径"，桌面那层就会反过来盖掉 `roots`，模式会**静默消失**（不报错、不警告）。
+#
+# **代价必须写在这里**：补丁按 id 覆盖 `config`（`target[key] = value`），所以
+# 下面把四个字段全部重述了一遍。将来官方给这一行加新字段，本包会静默把它抹掉
+# ——升级 DSH 之后请对照 `dsh --profile <name> --dump-default-config` 检查。
 # `story_doctor` 也会对照检查这一点。
 #
-# 另外：`roots` 是**整体替换**而非增量合并，所以本包会挤掉部署自己配置的根
-# （桌面宿主注入的那个）。shipped 预设不受影响——它们由 `includeShippedRoot`
-# 带进来，不占 `roots`。
+# shipped 预设不受影响——它们由 `includeShippedRoot` 带进来，不占 `roots`。
 #
 # ── 写下面那段代码前必须知道的三件事（都是实测踩出来的）─────────────────────
 #
