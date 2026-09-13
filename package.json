@@ -1,6 +1,6 @@
 {
   "name": "dsh-story-mode",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "DSH 短篇小说模式：一个包内含整套能力——agent preset（模式）、写作流程技能、文风契约技能、四个结构化工具。一条命令安装，卸载即拔。",
   "type": "module",
   "main": "lib/index.js",
