@@ -268,7 +268,7 @@ const skill = await removeSkillCopy()
 const legacy = await cleanLegacyPreset()
 const cleared = await clearDanglingDefault()
 
-const pending = [skill, legacy, cleared].some((result) => result === 'removed' || result === 'cleaned')
+const pending = [skill, legacy, cleared].some((result) => ['removed', 'cleaned', 'cleared'].includes(result))
 console.log('')
 
 if (skill === 'keep' || legacy === 'keep') {
