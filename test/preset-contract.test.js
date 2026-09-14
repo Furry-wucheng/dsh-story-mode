@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { renderDoctor } from '../lib/doctor.js'
 
@@ -11,6 +11,7 @@ const read = (relative) => readFile(join(root, relative), 'utf8')
 const COMPOSITION = 'presets/short-story/agent.cordis.yml'
 const PANEL = 'presets/short-story/skills/short-story/references/review-panel.md'
 const SKILL = 'presets/short-story/skills/short-story/SKILL.md'
+const FULL_STORY = 'presets/short-story/skills/short-story/references/full-story-workflow.md'
 
 test('reviewers are persistent subagents: continuable spawn plus send_message control', async () => {
   const composition = await read(COMPOSITION)
@@ -23,8 +24,8 @@ test('reviewers are persistent subagents: continuable spawn plus send_message co
   assert.doesNotMatch(composition, /provider:\s*fork/)
 })
 
-test('the flow skill and the panel both spell out reuse instead of re-dispatching', async () => {
-  for (const file of [SKILL, PANEL]) {
+test('the flow entry, full-story workflow and panel preserve reviewer reuse', async () => {
+  for (const file of [SKILL, FULL_STORY, PANEL]) {
     const text = await read(file)
     assert.match(text, /send_message/, `${file} 必须说明改稿后的复核走 send_message`)
     assert.match(text, /run_in_background: false/, `${file} 必须警告前台调用会退化成一次性会话`)
@@ -35,14 +36,26 @@ test('the flow skill and the panel both spell out reuse instead of re-dispatchin
   assert.match(panel, /最终盲读[\s\S]{0,60}新(读者|开)/)
 })
 
-test('a new story asks before drafting', async () => {
-  const composition = await read(COMPOSITION)
-  const skill = await read(SKILL)
-  for (const text of [composition, skill]) {
-    assert.match(text, /ask_user_question/)
+test('workflow references resolve from their source files within the packaged preset', async () => {
+  const presetRoot = resolve(root, 'presets/short-story')
+  const visited = new Set()
+  async function visit(file) {
+    if (visited.has(file)) return
+    visited.add(file)
+    const text = await readFile(file, 'utf8')
+    assert.ok(text.trim(), `${file} must not be empty`)
+    for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+\.md)\)/g)) {
+      const target = resolve(dirname(file), match[1])
+      const fromPreset = relative(presetRoot, target)
+      assert.ok(!isAbsolute(fromPreset) && !fromPreset.startsWith('..'), `${target} must stay in the preset`)
+      await visit(target)
+    }
   }
-  assert.match(skill, /一次问完/)
-  assert.match(skill, /篇幅档位由作者选/)
+  await visit(resolve(root, SKILL))
+  assert.ok(visited.has(resolve(root, FULL_STORY)), 'complete-story workflow must be reachable from the entry')
+  assert.ok(visited.has(resolve(root, PANEL)), 'review panel must be reachable from the entry')
+  const manifest = JSON.parse(await read('package.json'))
+  assert.ok(manifest.files.includes('presets'), 'workflow resources must be included in the package')
 })
 
 test('the composition stays portable and keeps the contract scoped to this preset', async () => {
@@ -66,6 +79,7 @@ function cleanReport(overrides = {}) {
     presetInPackage: { status: 'ok', pluginRow: '../../lib/index.js', pluginRowResolves: true },
     presetSourcePresent: true,
     presetFlowSkillPresent: true,
+    presetFullStoryWorkflowPresent: true,
     presetReviewPanelPresent: true,
     presetStyleSkillPresent: true,
     presetStyleSkillMounted: true,
@@ -86,4 +100,11 @@ test('doctor reports reusable reviewers and fails the check when they are one-sh
   const degraded = renderDoctor(cleanReport({ presetReviewersReusable: false }))
   assert.match(degraded, /审读员可复用（continuable \+ send_message） \| \*\*否/)
   assert.match(degraded, /- preset 里的审读员不是可复用子代理/)
+})
+
+test('doctor reports a missing full-story workflow instead of a healthy installation', () => {
+  const report = renderDoctor(cleanReport({ presetFullStoryWorkflowPresent: false }))
+  assert.match(report, /完整故事流程[^\n]*无法加载/)
+  assert.match(report, /包内缺少写作技能的 references\/full-story-workflow\.md/)
+  assert.doesNotMatch(report, /一切正常/)
 })
