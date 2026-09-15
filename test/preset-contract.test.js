@@ -11,7 +11,7 @@ const read = (relative) => readFile(join(root, relative), 'utf8')
 const COMPOSITION = 'presets/short-story/agent.cordis.yml'
 const PANEL = 'presets/short-story/skills/short-story/references/review-panel.md'
 const SKILL = 'presets/short-story/skills/short-story/SKILL.md'
-const FULL_STORY = 'presets/short-story/skills/short-story/references/full-story-workflow.md'
+const WORKFLOW = 'presets/short-story/skills/short-story/references/writing-workflow.md'
 
 test('reviewers are persistent subagents: continuable spawn plus send_message control', async () => {
   const composition = await read(COMPOSITION)
@@ -24,8 +24,8 @@ test('reviewers are persistent subagents: continuable spawn plus send_message co
   assert.doesNotMatch(composition, /provider:\s*fork/)
 })
 
-test('the flow entry, full-story workflow and panel preserve reviewer reuse', async () => {
-  for (const file of [SKILL, FULL_STORY, PANEL]) {
+test('the flow entry, shared writing workflow and panel preserve reviewer reuse', async () => {
+  for (const file of [SKILL, WORKFLOW, PANEL]) {
     const text = await read(file)
     assert.match(text, /send_message/, `${file} 必须说明改稿后的复核走 send_message`)
     assert.match(text, /run_in_background: false/, `${file} 必须警告前台调用会退化成一次性会话`)
@@ -52,7 +52,7 @@ test('workflow references resolve from their source files within the packaged pr
     }
   }
   await visit(resolve(root, SKILL))
-  assert.ok(visited.has(resolve(root, FULL_STORY)), 'complete-story workflow must be reachable from the entry')
+  assert.ok(visited.has(resolve(root, WORKFLOW)), 'shared writing workflow must be reachable from the entry')
   assert.ok(visited.has(resolve(root, PANEL)), 'review panel must be reachable from the entry')
   const manifest = JSON.parse(await read('package.json'))
   assert.ok(manifest.files.includes('presets'), 'workflow resources must be included in the package')
@@ -79,7 +79,7 @@ function cleanReport(overrides = {}) {
     presetInPackage: { status: 'ok', pluginRow: '../../lib/index.js', pluginRowResolves: true },
     presetSourcePresent: true,
     presetFlowSkillPresent: true,
-    presetFullStoryWorkflowPresent: true,
+    presetWritingWorkflowPresent: true,
     presetReviewPanelPresent: true,
     presetStyleSkillPresent: true,
     presetStyleSkillMounted: true,
@@ -102,9 +102,9 @@ test('doctor reports reusable reviewers and fails the check when they are one-sh
   assert.match(degraded, /- preset 里的审读员不是可复用子代理/)
 })
 
-test('doctor reports a missing full-story workflow instead of a healthy installation', () => {
-  const report = renderDoctor(cleanReport({ presetFullStoryWorkflowPresent: false }))
-  assert.match(report, /完整故事流程[^\n]*无法加载/)
-  assert.match(report, /包内缺少写作技能的 references\/full-story-workflow\.md/)
+test('doctor reports a missing shared writing workflow instead of a healthy installation', () => {
+  const report = renderDoctor(cleanReport({ presetWritingWorkflowPresent: false }))
+  assert.match(report, /共用写作流程[^\n]*无法加载/)
+  assert.match(report, /包内缺少写作技能的 references\/writing-workflow\.md/)
   assert.doesNotMatch(report, /一切正常/)
 })
