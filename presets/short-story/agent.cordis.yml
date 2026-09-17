@@ -21,6 +21,25 @@
 #
 # 交付物是磁盘上的稿件，不是聊天里的回复——这条约定写在 persona 里，
 # 也写在技能里，因为它是这个模式全部价值的前提。
+#
+# ── 规则住在哪里（改这里之前先读）────────────────────────────────────────────
+#
+#   persona 行          身份、交付物、工作区边界、文风优先级。**不放流程规则**：
+#                       这段文本每一轮常驻，而且每个子代理都会连它一起收到。
+#   short-story 技能    流程入口与范围分流（接稿、规划、审读、交付）。
+#   writing-workflow.md 完整工序：接稿确认、人物卡、节拍、成稿、修订、交付。
+#   review-panel.md     审读规则：派发、版本、复用、角色触发条件、汇总验收。
+#   reviewers/*.md      五个审读角色的**固定 persona**，由下面每一行的
+#                       `persona` 从文件读出（`!!js`），派发时不再重述。
+#
+# 所以"派审读员"这件事有三层，只有第一层需要模型做判断：
+#   1. 主代理读面板的**角色触发条件表**，决定派哪几个；
+#   2. 用对应的角色工具派发，prompt 里只给变量（路径、版本、范围、改动清单）；
+#   3. 角色自己的 persona 已经在孩子身上，信息边界不靠主代理复述。
+#
+# 判据不是"工具多了几个"，而是"哪一层缺了会静默失效"：persona 里写过流程规则，
+# 就会和技能文档各说一套；模板写在面板里，就会每次派发重述一遍、也就每次可能漏掉
+# 一条信息边界。v1.1.3 之前正是这个形态。
 
 # ── 身份 ────────────────────────────────────────────────────────────────────
 
@@ -35,21 +54,13 @@
 
       **这是写作工作区，不是你的个人项目。** 只读、只改写作者让你改的文件。不要顺手创建 README、说明文档、目录索引、总结文件或任何作者没要的文件；不要重命名、移动或删除既有文件。需要新增文件时，先说明为什么需要。
 
-      主代理先加载 `short-story`，再用文件读取工具完整读取其 `references/writing-workflow.md` 和 `references/review-panel.md`，完整故事与片段都必须读取。加载技能不等于已读参考文件；写正文与改稿前还要加载 `writing-style-contract`。共同流程是确认方向与字数、准备人物卡和节拍、确认方案、成稿、独立审读、修订复核。范围只决定这些工作的覆盖内容，不取消步骤。
+      写任何正文或改稿之前，先加载 `short-story` 技能，再用文件读取工具完整读取它的 `references/writing-workflow.md` 与 `references/review-panel.md`——完整故事与片段都要读，加载技能不等于读过参考文件。工序列在共用写作流程里，审读规则和角色触发条件列在面板里，两边都以那里的文本为准，不靠记忆执行。动笔前还要加载 `writing-style-contract`。
 
-      新写或续写前，用 `ask_user_question` 一次问完作者未给出且未授权自拟的字数、方向、基调、关系口吻、视角与停止位置，等答复再写。没有目标字数或区间必须问，片段也不例外。“角色自拟”只授权角色，不能据此替作者决定篇幅或其他偏好。方向与字数确定后给人物及节拍方案，等确认再成稿；已有同一方案批准或明确免确认指令时不重复确认。作者明确全部由你决定或不要提问直接写时可以定方案，但人物卡、节拍和审读仍需完成。
+      审读角色池有五个，触发条件见面板的角色表：B1 冷读与最终盲读、B2 故事逻辑、B3 阅读体验、B4 文风执行、B5 动作与空间连续性。它们各自有专用工具（名字以 `subagent_review_` 开头），persona 与只读限制已经装在角色身上，**派发时只给变量**：正文路径、版本、范围与停止位置、必要的改动清单。不要传 `run_in_background: false`（前台调用拿不到可复用的 childId）。改稿复核用 `send_message` 发回同一位读者；只有最终盲读换一位全新读者。详情与材料边界见面板。
 
-      每次创作和修改都必须独立审读，局部片段也不能仅自查。新写、续写和大幅重写按面板做冷读、人物与节拍核对、修订复核及最终盲读；一句或一段的润色也要由独立读者审改动与接缝。主代理追踪版本和原句，工具计数和 lint 不能替代审读。读者不能因片段不闭环要求补成完整故事，审读不可用时如实标为待审。
+      **若你是被委派的审读员：只执行派发任务。** 不需要读技能、不必读写作流程；只读派发消息列出的材料，不改文件，不再委派。
 
-      新写、续写和大幅重写必须分别派 B1 冷读、B2 故事逻辑、B5 动作与空间连续性审查。B5 不由 B2 兼任，也不等主代理发现问题才派；局部修改涉及动作、位置、姿态、物品状态或相关删句时也必须派 B5。复核交原 B5 检查改动前后的状态链；缺少必要报告或复核时保持待审。派发模板与材料边界见审读面板。
-
-      正文达到停止位置就停止扩写，完成相应范围的审读和修订后再交付。新项目在获准目录内保存方向记录、人物卡、节拍和正文；已有项目沿用并补齐相关资产。不要枚举或读取其他故事目录，也不要创建无关说明文档；只检查拟用的新路径，搜索和审读员遵守相同材料边界。
-
-      **审读员是持久子代理，不是一次性调用。** 后台派发一次，记住返回的 childId；改稿后的复核用 `send_message` 交给**同一位**读者——它保留着上一版的阅读和自己的报告，前缀命中缓存，不必重读全文。只有最终盲读换一位全新读者。派发时**不要传 `run_in_background: false`**：在可复用模式下前台调用会退化成一次性会话，后续消息送不到，复用与缓存全部落空。
-
-      **若你是被委派的审读员：只执行派发任务，跳过主代理的接稿、写稿与技能加载流程。** 只读获准材料，不改文件，不再派子代理；冷读者尤其不读大纲、设定和文风契约。独立审读无法执行时如实说明，不虚报验收。
-
-      你的文风偏好排在作者之后：作者在接稿单或当场给出的语气、视角、禁忌，优先于技能里的默认风格。
+      你的文风偏好排在作者之后：作者在接稿时或当场给出的语气、视角、禁忌，优先于技能里的默认风格。
 
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
@@ -179,10 +190,30 @@
         headChars: 4096
         tailChars: 1024
 
-# ── 委派：可复用的审读员 ────────────────────────────────────────────────────
+# ── 委派：五个角色化的审读员 + 一个通用子代理 ───────────────────────────────
 #
 # `subagents` 注册表与 spawn 后端在宿主组成里，这里只贡献工具行。
 # 写作模式不需要工作流、Ralph 循环或多级委派——那些是编码模式的重武器。
+#
+# **为什么每个角色一行**：五个审读角色的固定部分（身份、读什么、不读什么、报告
+# 格式、字数上限）各自住在一个 `references/reviewers/*.md` 里，由下面每行的
+# `persona` 在挂载时读出来装到**那个角色**身上。于是：
+#   * 主代理派发时只给变量，不再从面板里抄一遍模板——抄一次就可能漏一条信息边界；
+#   * 主代理不必为"派谁"先吃下 18 KB 模板正文；
+#   * 每个孩子只装自己那一段，不再连主代理的 5.9 KB 人设一起收到。
+#
+# **`toolFilter` 是硬限制，不是提示词礼貌用语**：`spawn` provider 在孩子的创建
+# 窗口里调用 `childCtx.tools.restrict(...)`（`dsh-subagent/lib/types/child-agent.js`），
+# 所以审读员**物理上**没有写文件、编辑、呈现和再委派的能力。v1.1.2 及以前只能在
+# 模板里写"只读，不改文件"——审读面板自己都注明"这不是代码层的只读权限隔离"。
+# 注意 `restrict()` 对未知工具名**抛错**，而它抛在孩子创建窗口里＝那次派发直接失败，
+# 所以 `allow` 只列本组合真实注册过的名字：read / read_image / str_replace_editor /
+# glob / grep 来自下面三行工具行，skill 来自 tool-skill 行。
+# 故意**不**允许 `skill`：B4 需要的文风契约已经拼进它自己的 persona，其余角色不读技能。
+#
+# **`persona` 用 `!!js` 从包内文件读**：表达式在挂载时求值，`baseUrl` 是组合文件
+# 所在目录，所以路径跟着 preset 走。文件缺失会让这一行 config 无效、整个 preset
+# 挂不上——宁可报错，也不要一个悄悄没有信息边界的审读员。`story_doctor` 检查这些文件在不在。
 #
 # **为什么是 `continuable` 而不是 `one-shot`（v1.1.0 及以前的写法）**：
 # 一次性子代理是"派一次、从头读一遍全文、报完就没了"。改稿后想复核，只能再派
@@ -204,12 +235,72 @@
 # `send_message` / `interrupt_agent` 与 `list_agents` 由 control 包提供，它们是
 # 宿主 `subagents` 服务之上的模型侧适配器，不发布服务，所以放在这里不需要 realm。
 
+# 通用出口：留一个没有角色人设、也没有工具限制的子代理，供面板之外的临时用途
+# （例如让一位读者在改稿后重读被大改的整场）。常规审读一律走下面的角色工具。
 - id: tool-subagent
   name: '@deepseek-ai/dsh-tool-subagent'
   config:
     provider: spawn
     toolName: subagent
     backgroundMode: continuable
+
+- id: tool-subagent-review-b1
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent_review_b1
+    backgroundMode: continuable
+    toolFilter:
+      allow: [read, read_image, str_replace_editor, glob, grep]
+      deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+    persona: !!js "process.getBuiltinModule('node:fs').readFileSync(process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/short-story/references/reviewers/b1-cold-read.md', baseUrl)), 'utf8')"
+
+- id: tool-subagent-review-b2
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent_review_b2
+    backgroundMode: continuable
+    toolFilter:
+      allow: [read, read_image, str_replace_editor, glob, grep]
+      deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+    persona: !!js "process.getBuiltinModule('node:fs').readFileSync(process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/short-story/references/reviewers/b2-story-logic.md', baseUrl)), 'utf8')"
+
+- id: tool-subagent-review-b3
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent_review_b3
+    backgroundMode: continuable
+    toolFilter:
+      allow: [read, read_image, str_replace_editor, glob, grep]
+      deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+    persona: !!js "process.getBuiltinModule('node:fs').readFileSync(process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/short-story/references/reviewers/b3-reading-experience.md', baseUrl)), 'utf8')"
+
+# B4 的 persona = 角色说明 + 文风契约全文。契约必须**拼在角色说明后面**：契约的
+# 使用说明要求"先读作者要求、再完整读正文、最后对照契约"，而 persona 在 system
+# prompt 里位于最前，正文才是用户消息——顺序天然正确。
+- id: tool-subagent-review-b4
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent_review_b4
+    backgroundMode: continuable
+    toolFilter:
+      allow: [read, read_image, str_replace_editor, glob, grep]
+      deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+    persona: !!js "(() => { const fs = process.getBuiltinModule('node:fs'); const url = process.getBuiltinModule('node:url'); const role = fs.readFileSync(url.fileURLToPath(new URL('skills/short-story/references/reviewers/b4-style-execution.md', baseUrl)), 'utf8'); const contract = fs.readFileSync(url.fileURLToPath(new URL('../../skills/writing-style-contract/SKILL.md', baseUrl)), 'utf8'); return role + '\n' + contract; })()"
+
+- id: tool-subagent-review-b5
+  name: '@deepseek-ai/dsh-tool-subagent'
+  config:
+    provider: spawn
+    toolName: subagent_review_b5
+    backgroundMode: continuable
+    toolFilter:
+      allow: [read, read_image, str_replace_editor, glob, grep]
+      deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+    persona: !!js "process.getBuiltinModule('node:fs').readFileSync(process.getBuiltinModule('node:url').fileURLToPath(new URL('skills/short-story/references/reviewers/b5-physical-continuity.md', baseUrl)), 'utf8')"
 
 - id: tool-subagent-control
   name: '@deepseek-ai/dsh-tool-subagent-control'

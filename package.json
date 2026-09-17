@@ -1,7 +1,7 @@
 {
   "name": "dsh-story-mode",
-  "version": "1.1.2",
-  "description": "DSH 短篇小说模式：一个包内含整套能力——agent preset（模式）、写作流程技能、文风契约技能、四个结构化工具。一条命令安装，卸载即拔。",
+  "version": "1.1.3",
+  "description": "DSH 短篇小说模式：一个包内含整套能力——agent preset（模式）、写作流程技能、文风契约技能、五个角色化只读审读员与四个结构化工具。一条命令安装，卸载即拔。",
   "type": "module",
   "main": "lib/index.js",
   "bin": {
@@ -21,6 +21,7 @@
   },
   "scripts": {
     "test": "node --test",
+    "verify": "node scripts/verify-composition.mjs",
     "cleanup": "node scripts/cleanup.mjs",
     "check": "node scripts/cleanup.mjs --check"
   },
