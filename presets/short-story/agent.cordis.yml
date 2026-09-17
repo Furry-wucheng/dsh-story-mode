@@ -280,6 +280,15 @@
 # B4 的 persona = 角色说明 + 文风契约全文。契约必须**拼在角色说明后面**：契约的
 # 使用说明要求"先读作者要求、再完整读正文、最后对照契约"，而 persona 在 system
 # prompt 里位于最前，正文才是用户消息——顺序天然正确。
+#
+# **换行符必须写成 `String.fromCharCode(10)`，不能写 `'\n'`。** 这一行的 `!!js` 值
+# 是 **YAML 双引号标量**：YAML 会先处理转义，`\n` 在 loader 拿到之前就已经变成真正的
+# 换行符，于是 JS 源码里出现跨行的字符串字面量 → `SyntaxError: Invalid or unexpected
+# token`。而 `mount` 的契约是"setup 里抛错就回滚整个 agent 创建"，表现为**点新会话
+# 没反应**（RPC 失败、没有半成品会话），roster 里 `broken` 仍然是 null——因为文件形状
+# 完全合法，只有真正求值那一刻才炸。v1.1.3 正是栽在这里（只有 b4 这一行含转义，
+# 另外六个 `!!js` 行不含，所以看起来一切正常）。`scripts/verify-composition.mjs`
+# 现在会用 loader 同款解析器交叉验证，这类错误不会再漏过。
 - id: tool-subagent-review-b4
   name: '@deepseek-ai/dsh-tool-subagent'
   config:
@@ -289,7 +298,7 @@
     toolFilter:
       allow: [read, read_image, str_replace_editor, glob, grep]
       deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
-    persona: !!js "(() => { const fs = process.getBuiltinModule('node:fs'); const url = process.getBuiltinModule('node:url'); const role = fs.readFileSync(url.fileURLToPath(new URL('skills/short-story/references/reviewers/b4-style-execution.md', baseUrl)), 'utf8'); const contract = fs.readFileSync(url.fileURLToPath(new URL('../../skills/writing-style-contract/SKILL.md', baseUrl)), 'utf8'); return role + '\n' + contract; })()"
+    persona: !!js "(() => { const fs = process.getBuiltinModule('node:fs'); const url = process.getBuiltinModule('node:url'); const role = fs.readFileSync(url.fileURLToPath(new URL('skills/short-story/references/reviewers/b4-style-execution.md', baseUrl)), 'utf8'); const contract = fs.readFileSync(url.fileURLToPath(new URL('../../skills/writing-style-contract/SKILL.md', baseUrl)), 'utf8'); return role + String.fromCharCode(10) + contract; })()"
 
 - id: tool-subagent-review-b5
   name: '@deepseek-ai/dsh-tool-subagent'

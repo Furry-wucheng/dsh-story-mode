@@ -1,21 +1,27 @@
 /**
  * 组合自检：把 preset 的 agent.cordis.yml 当成 loader 那样读一遍。
  *
- * 它回答的不是"文件能不能解析"，而是四个**只在装配时才会暴露**的问题：
- *   1. 每行的 `!!js` 能不能求值——尤其是审读员行的 persona 真能从包内文件读出来；
- *   2. 每行的 `config` 能不能过插件自己的 Config schema；
- *   3. `toolFilter` 里点名的工具是不是本组合真实注册过的（名字错了会在子代理
- *      创建窗口抛错＝那次派发直接失败）；
- *   4. 审读员有没有被误授权写文件、呈现或再委派，以及有没有重复的工具名。
+ * 它回答的不是"文件能不能解析"，而是六个**只在装配时才会暴露**的问题：
+ *   1. 每行的 `!!js` 能不能**编译**——语法错误要等到挂载那一刻才炸，而 `mount` 的
+ *      契约是"setup 抛错就回滚整次 agent 创建"，表现为点新会话没反应；
+ *   2. `!!js` 里的值有没有被 YAML 转义改写（`'\n'` 在双引号标量里会变成真换行）；
+ *   3. 双引号标量里有没有反斜杠转义（同一个坑的预防性检查）；
+ *   4. 每行的 `config` 能不能过插件自己的 Config schema；
+ *   5. `toolFilter` 点名的工具是不是本组合真实注册过的（名字错了会在子代理创建
+ *      窗口抛错＝那次派发直接失败）；
+ *   6. 审读员有没有被误授权写文件、呈现或再委派，人设是不是真来自它自己的文件。
  *
  * 用法：node scripts/verify-composition.mjs
  * 退出码 0 = 全过；1 = 有失败项（打印到 stderr）。
  *
- * **零依赖**（和这个包本身一样）：这里的 YAML 读取器只认本组合实际用到的子集
- * ——顶层/分组的块序列、`key: value` 映射、`|-` 字面块标量、`- 值` 标量序列、
- * `[...]` 流序列、`#` 注释和 `!!js` 标量标记。它是**校验器**，不是通用解析器：
- * 遇到不认识的形状会直接报错退出，而不是猜。这样"脚本读错了组合"永远不会伪装成
- * "组合是对的"。
+ * 两件它**不能**代替的事：真实会话里的工具清单，以及子代理真的能起来。
+ *
+ * **零依赖**（和这个包本身一样）：自带一个只认组合实际用到子集的 YAML 读取器
+ * ——块序列、`key: value`、`|-` 字面块标量、`- 值` 标量序列、`[...]` 流序列、
+ * `#` 注释和 `!!js` 标量标记。它是**校验器**不是通用解析器：遇到不认识的形状直接
+ * 报错退出，而不是猜。**但它不做 YAML 转义**，所以凡是"值里可能出现转义"的判断，
+ * 都必须以 loader 自己的解析器（js-yaml + `entryListSchema`）为准——第 1b 节就是
+ * 为此存在的，v1.1.3 正是栽在只有那个解析器才看得出的错误上。
  */
 import { readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
@@ -30,6 +36,10 @@ const baseUrl = pathToFileURL(join(ROOT, 'presets', 'short-story') + '\\').href
 const failures = []
 const notes = []
 const fail = (message) => failures.push(message)
+const die = (message) => {
+  console.error(`[FAIL] ${message}`)
+  process.exit(1)
+}
 
 /** 审读员工具名 → 它的固定人设文件；组合里每一行都按这张表读文件。 */
 const ROLE_FILES = {
@@ -275,11 +285,14 @@ function interpolate(value) {
   return value
 }
 
-function evaluate(source) {
+function compileExpression(source) {
   // `baseUrl` 走参数而不是外层作用域：严格模式下的 `new Function` 不会闭包捕获
   // 模块作用域的绑定，写成自由变量会直接 ReferenceError。
-  const factory = new Function('ctx', 'baseUrl', 'process', `"use strict"; return (${source});`)
-  return factory({ baseUrl }, baseUrl, process)
+  return new Function('ctx', 'baseUrl', 'process', `"use strict"; return (${source});`)
+}
+
+function evaluate(source) {
+  return compileExpression(source)({ baseUrl }, baseUrl, process)
 }
 
 // ── 1. 读并解析 ─────────────────────────────────────────────────────────────
@@ -289,15 +302,13 @@ let rows
 try {
   rows = parseComposition(raw)
 } catch (error) {
-  console.error(`[FAIL] 组合读不动：${error.message}`)
-  process.exit(1)
+  die(`组合读不动：${error.message}`)
 }
 // 读取器只认子集；形状对不上时必须响亮地失败，而不是少读几行之后报"通过"。
 // 计数用 `[ \t]*` 而不是 `\s*`：多行模式下 `\s` 会跨行吞掉换行，把 25 条读成 0 条。
 const declaredRows = (raw.match(/^[ \t]*- id:/gm) ?? []).length
 if (declaredRows !== pluginRowsRead) {
-  console.error(`[FAIL] YAML 读取器读到的行数与文件不符：文件里 ${declaredRows} 个 "- id:"，读出 ${pluginRowsRead} 个`)
-  process.exit(1)
+  die(`YAML 读取器读到的行数与文件不符：文件里 ${declaredRows} 个 "- id:"，读出 ${pluginRowsRead} 个`)
 }
 
 const flat = []
@@ -315,7 +326,7 @@ walk(rows, '')
 
 notes.push(`组合 ${pluginRowsRead} 行（含分组子行），其中子代理工具 ${flat.filter((r) => String(r.name).includes('tool-subagent')).length} 行；另有标量序列项 ${scalarItemsRead} 个`)
 
-// ── 2. 每行的 !!js 与 config schema ────────────────────────────────────────
+// ── 1b. 找 harness（插件源码、Config schema、loader 的 YAML 方言都从它取）────
 
 /**
  * 找 `@deepseek-ai/*` 的地方。
@@ -323,7 +334,7 @@ notes.push(`组合 ${pluginRowsRead} 行（含分组子行），其中子代理�
  * 本包**没有依赖**（连 schemastery 都不 import），所以仓库里没有 node_modules 可查；
  * 而那些插件装在 harness 自己的 node_modules 下。顺序是：脚本自己解析得到的位置
  * → `DSH_HARNESS` → 桌面版的默认路径。**找不到就报错，不静默降级**：这个脚本的
- * 另一半价值就是"工具名对不对"，账本读不到时它必须说自己不可信。
+ * 价值全在"用真实的插件与真实的解析器校验"，拿不到就必须说自己不可信。
  */
 function resolveHarnessRequire() {
   const candidates = []
@@ -335,7 +346,8 @@ function resolveHarnessRequire() {
   } catch { /* 仓库里没有 node_modules，正常 */ }
   const explicit = process.env.DSH_HARNESS
   if (typeof explicit === 'string' && explicit.trim().length > 0) {
-    candidates.push({ require: createRequire(new URL('file:///' + explicit.replace(/\\/g, '/').replace(/\/?$/, '/') + 'package.json')), label: `DSH_HARNESS=${explicit}` })
+    const base = 'file:///' + explicit.replace(/\\/g, '/').replace(/\/?$/, '/') + 'package.json'
+    candidates.push({ require: createRequire(base), label: `DSH_HARNESS=${explicit}` })
   }
   candidates.push({
     require: createRequire('file:///C:/Program%20Files/DSH%20Desktop/resources/app/package.json'),
@@ -353,15 +365,121 @@ function resolveHarnessRequire() {
 
 const harness = resolveHarnessRequire()
 if (harness.found.length === 0) {
-  console.error('[FAIL] 找不到 harness 的 node_modules，无法读取插件源码与 Config schema。')
-  console.error('  这个脚本要验证 toolFilter 里的工具名和每行 config，必须能查到已安装的插件。')
+  console.error('[FAIL] 找不到 harness 的 node_modules，无法读取插件源码、Config schema 与 loader 的 YAML 方言。')
   console.error('  用 DSH_HARNESS=<harness 安装目录> 指给它，例如：')
   console.error('    $env:DSH_HARNESS = "C:\\Program Files\\DSH Desktop\\resources\\app"')
   console.error(`  试过的位置：${harness.candidates.map((c) => c.label).join('、')}`)
   process.exit(1)
 }
 const harnessRequire = harness.found[0].require
-notes.push(`插件源码来自：${harness.found[0].label}${harness.found.length > 1 ? `（另有 ${harness.found.length - 1} 处同样可用）` : ''}`)
+notes.push(`插件源码与解析器来自：${harness.found[0].label}${harness.found.length > 1 ? `（另有 ${harness.found.length - 1} 处同样可用）` : ''}`)
+
+// ── 1c. 与 loader 同款解析器交叉验证 ────────────────────────────────────────
+//
+// v1.1.3 的事故就藏在这一步：`persona: !!js "… return role + '\n' + contract; …"`
+// 里的 `\n` 被 **YAML 双引号标量**先解析成真正的换行符，JS 源码于是跨行、编译报
+// `Invalid or unexpected token`——而 mount 抛错就回滚整次 agent 创建，表现为"点新
+// 会话没反应"，roster 里 `broken` 还是 null。**本脚本自己的读取器不做 YAML 转义**，
+// 所以它当时看不出问题。凡涉及"值里出现转义"的判断，都必须以 loader 的解析器为准。
+function loadLoaderDialect() {
+  try {
+    const jsYaml = harnessRequire('js-yaml')
+    const include = harnessRequire('@deepseek-ai/cordis-plugin-include')
+    if (typeof include.entryListSchema === 'undefined') return { error: 'entryListSchema 未导出' }
+    return { load: jsYaml.load, schema: include.entryListSchema }
+  } catch (error) {
+    return { error: error.message }
+  }
+}
+
+/** 取出一行 config 里所有 `!!js` 表达式（标记对象或数组元素都可能带）。 */
+function jsExprs(value, found = []) {
+  if (value instanceof Object && '__jsExpr' in value) found.push(value.__jsExpr)
+  else if (Array.isArray(value)) for (const item of value) jsExprs(item, found)
+  else if (value !== null && typeof value === 'object') for (const item of Object.values(value)) jsExprs(item, found)
+  return found
+}
+
+const dialect = loadLoaderDialect()
+if (dialect.error !== undefined) {
+  console.error(`[FAIL] 拿不到 loader 的 YAML 方言，无法交叉验证：${dialect.error}`)
+  console.error('  loader 用 js-yaml + entryListSchema（带 !!js 标量类型）；')
+  console.error('  没有它就查不出"转义后被改写"这一整类错误——那正是 v1.1.3 挂掉的原因。')
+  process.exit(1)
+}
+
+let authoritative
+try {
+  authoritative = dialect.load(raw, { schema: dialect.schema })
+} catch (error) {
+  die(`loader 方言解析失败：${error.message}`)
+}
+notes.push('已用 loader 同款解析器（js-yaml + entryListSchema）交叉验证')
+
+const flatAuthoritative = []
+function walkAuthoritative(list, prefix) {
+  for (const row of list ?? []) {
+    const at = prefix === '' ? row.id : `${prefix}/${row.id}`
+    if (row.group === true) {
+      walkAuthoritative(row.config ?? [], at)
+      continue
+    }
+    flatAuthoritative.push({ ...row, at })
+  }
+}
+walkAuthoritative(authoritative, '')
+
+const theirs = new Map(flatAuthoritative.map((row) => [row.at, row]))
+if (flat.length !== flatAuthoritative.length) {
+  die(`交叉验证：行数不一致（本脚本 ${flat.length}，loader 方言 ${flatAuthoritative.length}）`)
+}
+
+let compiledExpressions = 0
+for (const row of flat) {
+  const other = theirs.get(row.at)
+  if (other === undefined) die(`交叉验证：loader 方言里没有行 ${row.at}`)
+  const left = jsExprs(row.config ?? {})
+  const right = jsExprs(other.config ?? {})
+  if (left.length !== right.length) {
+    die(`行 ${row.at} 的 !!js 数量不一致（本脚本 ${left.length}，loader 方言 ${right.length}）`)
+  }
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) {
+      console.error(`[FAIL] 行 ${row.at} 的第 ${i + 1} 个 !!js 两种解析结果不同——说明值里有 YAML 转义被改写了：`)
+      console.error(`  本脚本（不做转义）：${JSON.stringify(left[i]).slice(0, 160)}`)
+      console.error(`  loader 方言（真实）：${JSON.stringify(right[i]).slice(0, 160)}`)
+      process.exit(1)
+    }
+  }
+  // 真正那句：每个表达式都必须能编译。语法错误挂载时才炸，而那时整个会话创建被回滚。
+  for (const source of right) {
+    try {
+      compileExpression(source)
+      compiledExpressions += 1
+    } catch (error) {
+      console.error(`[FAIL] 行 ${row.at} 的 !!js 编译不过：${error.message}`)
+      console.error(`  源码：${JSON.stringify(source).slice(0, 200)}`)
+      console.error('  提示：YAML 双引号标量会先处理 \\n \\t 这类转义；换行请用 String.fromCharCode(10)。')
+      process.exit(1)
+    }
+  }
+}
+notes.push(`本组合共 ${compiledExpressions} 个 !!js，全部编译通过`)
+
+// 只编译还不够：要主动挡住"以后再被写回去"。`!!js` 双引号标量里的反斜杠会被 YAML
+// 先吃掉（`\n` → 真换行），而**单引号或折叠标量里的反斜杠是字面量**、不危险。
+// 所以只对双引号形式报警，并指明替代写法。
+const riskyScalar = [...raw.matchAll(/!!js[ \t]+"([^"\n]*\\[^"\n]*)"/g)]
+if (riskyScalar.length > 0) {
+  for (const match of riskyScalar) {
+    console.error(`[FAIL] !!js 双引号标量里出现反斜杠转义：${JSON.stringify(match[0]).slice(0, 160)}`)
+  }
+  console.error('  YAML 会先处理双引号标量里的 \\n \\t 等转义，JS 源码因此被改写甚至跨行。')
+  console.error('  换行请写 String.fromCharCode(10)；需要字面反斜杠就用单引号或折叠标量（它们不处理转义）。')
+  process.exit(1)
+}
+
+// ── 2. 每行的 config 过插件自己的 schema ───────────────────────────────────
 
 const SUBAGENT_TOOL_NAMES = new Set()
 
@@ -439,8 +557,7 @@ async function packageDeclaresToolName(packageName, toolName) {
   addFile(join(directory, 'lib', 'index.js'))
   for (const subpath of Object.keys(pkg.exports ?? {})) {
     if (subpath === '.') continue
-    const target = pkg.exports[subpath]
-    if (typeof target === 'string') fromSpecifier(`${packageName}/${subpath.replace(/^\.\//, '')}`)
+    if (typeof pkg.exports[subpath] === 'string') fromSpecifier(`${packageName}/${subpath.replace(/^\.\//, '')}`)
   }
   try {
     const lib = join(directory, 'lib')
@@ -463,7 +580,6 @@ async function packageDeclaresToolName(packageName, toolName) {
 }
 
 const TOOL_ROWS = flat.filter((row) => typeof row.name === 'string' && row.name.startsWith('@deepseek-ai/dsh-tool-'))
-const toolRowTools = new Map()
 const toolLedger = new Set()
 
 for (const row of TOOL_ROWS) {
@@ -485,15 +601,13 @@ for (const row of TOOL_ROWS) {
   for (const name of [...new Set(candidates)]) {
     if (name === configDeclared || await packageDeclaresToolName(packageName, name)) declared.push(name)
   }
-  toolRowTools.set(row.at, declared)
   for (const name of declared) toolLedger.add(name)
   notes.push(`工具行 ${row.at}：${declared.length > 0 ? declared.join(', ') : '**没确认到任何工具名**'}`)
   if (declared.length === 0) fail(`行 ${row.at}（${row.name}）没能确认它注册的工具名，本脚本无法判断 toolFilter 是否安全`)
 }
 
 if (!toolLedger.has('read') || !toolLedger.has('write')) {
-  console.error('[FAIL] 工具账本没确认到 fs 的 read/write，本脚本无法判断 toolFilter 的名字是否正确')
-  process.exit(1)
+  die('工具账本没确认到 fs 的 read/write，本脚本无法判断 toolFilter 的名字是否正确')
 }
 notes.push(`工具账本共 ${toolLedger.size} 个名字（每个都确认过注册在它那一行所属的包里）`)
 
@@ -574,7 +688,8 @@ if (b4 !== undefined) {
   if (probe === undefined || !persona.includes(probe)) {
     fail(`B4 的 persona 里找不到文风契约的正文（探测句：${JSON.stringify(probe?.slice(0, 30))}）`)
   }
-  const expected = (await readFile(join(ROOT, 'presets', 'short-story', 'skills', 'short-story', 'references', 'reviewers', ROLE_FILES.subagent_review_b4), 'utf8')).length + 1 + contract.length
+  const roleText = await readFile(join(ROOT, 'presets', 'short-story', 'skills', 'short-story', 'references', 'reviewers', ROLE_FILES.subagent_review_b4), 'utf8')
+  const expected = roleText.length + 1 + contract.length
   if (Math.abs(persona.length - expected) > 4) {
     fail(`B4 的 persona 长度 ${persona.length} 与"角色文件 + 契约"（${expected}）不符`)
   }
@@ -587,7 +702,7 @@ console.log('')
 for (const note of notes) console.log(`- ${note}`)
 console.log('')
 if (failures.length === 0) {
-  console.log('全部通过：每行的 !!js 可求值、config 过 schema、toolFilter 只点名真实工具、审读员均为只读。')
+  console.log('全部通过：每个 !!js 可编译且未被 YAML 转义改写、config 过 schema、toolFilter 只点名真实工具、审读员均为只读。')
   process.exit(0)
 }
 console.error(`有 ${failures.length} 项失败：`)

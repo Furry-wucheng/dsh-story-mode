@@ -258,8 +258,14 @@ npm run verify  # 组合自检：把 agent.cordis.yml 当成 loader 那样读一
 回归测试覆盖分场、引号统计、真实配额、用词线索、人物卡和卸载检查，并钉住审读流程的形态（角色各自成行、只读 toolFilter、B3/B4 的可观测触发条件、人设里不再夹带流程规则）。测试只使用内存稿件和临时 DSH 主目录，不修改真实用户设置。
 npm run check 与 CLI check 都是卸载残留检查，不是单元测试或完整安装验证。
 
-`npm run verify` 补上单元测试碰不到的那一半：它会求值每行的 `!!js`（确认审读员的 persona 真能从包内文件读出来）、用插件自己的 `Config` 校验每行 config，并把 `toolFilter` 点名的工具与**插件源码里真正注册过的名字**对账——`tools.restrict()` 对未知名字抛错，而它抛在子代理的创建窗口里，写错一个字就是"派发直接失败"。它需要能读到 harness 已安装的插件（仓库本身零依赖），默认按桌面版路径查找，可用 `DSH_HARNESS` 指定。
+`npm run verify` 补上单元测试碰不到的那一半：它用 **loader 自己的解析器**（js-yaml + `entryListSchema`）交叉验证组合，对每个 `!!js` 表达式做编译检查，用插件自己的 `Config` 校验每行 config，并把 `toolFilter` 点名的工具与**插件源码里真正注册过的名字**对账。它需要能读到 harness 已安装的插件（仓库本身零依赖），默认按桌面版路径查找，可用 `DSH_HARNESS` 指定。
 两件它**不能**代替的事：真实会话里的工具清单，以及子代理真的能起来。装好后请开一个会话跑一次新写或片段，确认 `subagent_review_b1` … `subagent_review_b5` 五个工具都在、派一次能拿到 `started subagent <childId>`。
+
+### 为什么 `!!js` 里不能写 `'\n'`
+
+`!!js` 的值在组合里是 **YAML 双引号标量**，YAML 会先处理转义：`'\n'` 在 loader 拿到源码之前就变成了真正的换行，于是 JS 里出现跨行的字符串字面量 → `SyntaxError: Invalid or unexpected token`。而 preset 的 `mount` 契约是"setup 里抛错就回滚整次 agent 创建"，所以表现不是报错，而是**点新会话没反应**；roster 里 `broken` 仍是 `null`，因为文件形状完全合法。v1.1.3 正是栽在 B4 那一行的换行拼接上（另外六个 `!!js` 不含转义，所以只有它炸）。
+
+结论：需要换行就写 `String.fromCharCode(10)`；需要字面反斜杠就用单引号或折叠标量（它们不处理转义）。`npm run verify` 现在会把这两类写法都拦下来——先做交叉验证比对两种解析结果，再对双引号标量里的反斜杠做预防性检查。
 
 ---
 
