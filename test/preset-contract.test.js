@@ -84,6 +84,91 @@ test('B3 and B4 carry observable dispatch conditions instead of a judgement call
   assert.doesNotMatch(panel, /你是故事逻辑审读员/)
 })
 
+test('the relationship axis is a first-class pass, not a by-product of consistency checks', async () => {
+  // 一次实测暴露的失效形态：五个角色的报告清单全在问"这里有没有矛盾"，
+  // 于是"这一跳有没有依据"没人问——一份处处自洽、主轴空心的稿子被当成
+  // "没有大结构问题"交付。下面几处一起构成那道缺口，缺一处就退回去。
+  const panel = await read(PANEL)
+  const workflow = await read(WORKFLOW)
+  const skill = await read(SKILL)
+  const b2 = await read(`${REVIEWER_DIR}/b2-story-logic.md`)
+
+  // 1. 面板里必须有一节，把两类问题分开写，并点明它是 B2 的职责（不是新角色）。
+  assert.match(panel, /## 4\.0 关系轴审读/)
+  assert.match(panel, /一致性/)
+  assert.match(panel, /充分性/)
+  assert.match(panel, /由 \*\*B2 承担\*\*/)
+  // 两个时机都必须在面板里出现：方案阶段先跑，成稿后核一遍。
+  assert.match(panel, /方案阶段（默认，必做，先于任何正文落地）/)
+  assert.match(panel, /首次成稿后/)
+  // 不接受概括结论。
+  assert.match(panel, /不接受“整体尚可”|不接受"整体尚可"/)
+  // 关系轴不能由另外四个角色兼任（它们的边界里都写着不管剧情因果）。
+  assert.match(panel, /关系轴不由 B1\/B3\/B4\/B5 兼任/)
+
+  // 2. "留白"这条护栏必须写明不适用于主轴——否则它会把唯一能报缺口的读者也堵死。
+  assert.match(panel, /不适用于主轴/)
+  assert.match(panel, /他动没动过心/)
+
+  // 3. B2 的人设里要有两组逐条引用的必答项，以及"全可否认 = 缺口"的判据。
+  assert.match(b2, /## 关系轴/)
+  assert.match(b2, /不可否认/)
+  assert.match(b2, /全部条目都可否认/)
+  // "有条目不可否认"不等于成立：盲测第三轮实测到这种更隐蔽的形态（15 条不可否认，但全压在关系变化之后）。
+  assert.match(b2, /还要看分布/)
+  assert.match(b2, /是不是回应/)
+  assert.match(b2, /他单独为对方做的/)
+  assert.match(b2, /该由谁在哪一拍主动一次/)
+  assert.match(b2, /推动者分布/)
+  assert.match(b2, /拒绝.*整体尚可|不接受“整体尚可”|不接受"整体尚可"/)
+  // 报告清单里必须有一个槽位点名这一节，否则它会退回成"可选补充"。
+  assert.match(b2, /\*\*关系轴两组问答\*\*/)
+  // 字数上限必须对关系轴放宽：实测两版都写到 3500+ 字，压字数会把必答项写空。
+  // 盲测里新版仍只写 1276 汉字并丢掉了逐条表格，所以这里钉的是"不受约束 + 保留逐条列表"。
+  assert.match(b2, /关系轴那一节不受 1200 字约束/)
+  assert.match(b2, /要保留逐条列表/)
+  assert.match(b2, /概括的关系轴结论等于没做这一节/)
+
+  // 4. 节拍表必须有"谁推动"，否则 B2 没有对照物可读。
+  assert.match(workflow, /关系轴：每一拍都要能回答/)
+  assert.match(workflow, /推动者/)
+  assert.match(workflow, /不改变任何一方状态的拍，是重复场景/)
+  assert.match(workflow, /不可否认/)
+  // 5. 方案阶段先跑（C4：最便宜的拦截），且"免确认"不能跳过它。
+  assert.match(workflow, /### 4\.0 关系轴审读/)
+  assert.match(skill, /方案先过关系轴审读/)
+  assert.match(skill, /不因"免确认"而跳过|不因“免确认”而跳过/)
+  // 6. "我没看懂"落在主线上按结构问题处理，不做句子级修补。
+  assert.match(workflow, /作者的“我没看懂”是指令|作者的"我没看懂"是指令/)
+  assert.match(skill, /作者说"我没看懂"是指令|作者说“我没看懂”是指令/)
+})
+
+test('dialogue function and character knowledge are checked, not just line shape', async () => {
+  // 实测的第二种失效：全篇台词每句都在交付信息或下判词，读起来像双方在念台词；
+  // 同时"看穿"的能力没有依据，被作者读成上帝视角。lint 的七条规则全是字面形状，
+  // 一条也测不到这个——所以判据必须落在规划与 B2 的必答项里。
+  const workflow = await read(WORKFLOW)
+  const b2 = await read(`${REVIEWER_DIR}/b2-story-logic.md`)
+  const panel = await read(PANEL)
+  const contract = await read('skills/writing-style-contract/SKILL.md')
+
+  // 规划阶段为"无功能交流"留位置（契约第四节列了形式，但成稿里常常一个都没落地）。
+  assert.match(workflow, /台词的功能分布/)
+  assert.match(workflow, /无功能/)
+  assert.match(contract, /随口附和、确认听清、自我纠正、绕开问题/)
+  // 看穿要单向向下、且当场有证据。
+  assert.match(workflow, /单向、向下/)
+  assert.match(workflow, /地位更低或更被动/)
+  // B2 的第三组必答项：抄不出依据就是缺口，并给出可照抄的对照。
+  assert.match(b2, /第三组：谁比读者先知道/)
+  assert.match(b2, /抄不出依据的，报缺口/)
+  assert.match(b2, /你站得太近了/)
+  assert.match(b2, /你心事太重/)
+  // 这一组必须与 B4 的视角检查划清界限，否则两边互相让。
+  assert.match(b2, /它不是视角问题/)
+  assert.match(panel, /上帝视角|比读者先知道/)
+})
+
 test('the persona stays identity-only and the review conditions live in the panel', async () => {
   const composition = await read(COMPOSITION)
   const persona = composition.match(/prefix: \|-\r?\n([\s\S]*?)\r?\n\r?\n- id: agent-instructions/)?.[1] ?? ''
