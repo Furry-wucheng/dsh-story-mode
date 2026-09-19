@@ -31,7 +31,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = dirname(HERE)
 const COMPOSITION = join(ROOT, 'presets', 'short-story', 'agent.cordis.yml')
-const baseUrl = pathToFileURL(join(ROOT, 'presets', 'short-story') + '\\').href
+// 目录形式的 baseUrl 必须带尾斜杠，否则 `new URL('skills/', baseUrl)` 会把最后
+// 一段当文件替换掉。这里不能用 `join(...) + '\\'`：反斜杠只是 Windows 的分隔符，
+// 在 macOS／Linux 上它会被当成文件名的一部分，于是解析出的路径是
+// `<root>/presets/skills/...`，五个审读员的 `!!js` 全部 ENOENT——看起来像
+// "行坏了"，实际是自检脚本自己走错目录。用 `pathToFileURL` 的目录形式即可。
+const baseUrl = new URL('presets/short-story/', pathToFileURL(ROOT + '/')).href
 
 const failures = []
 const notes = []

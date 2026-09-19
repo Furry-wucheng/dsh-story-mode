@@ -122,7 +122,7 @@ test('the relationship axis is a first-class pass, not a by-product of consisten
   assert.match(b2, /推动者分布/)
   assert.match(b2, /拒绝.*整体尚可|不接受“整体尚可”|不接受"整体尚可"/)
   // 报告清单里必须有一个槽位点名这一节，否则它会退回成"可选补充"。
-  assert.match(b2, /\*\*关系轴两组问答\*\*/)
+  assert.match(b2, /\*\*关系轴四组问答\*\*/)
   // 字数上限必须对关系轴放宽：实测两版都写到 3500+ 字，压字数会把必答项写空。
   // 盲测里新版仍只写 1276 汉字并丢掉了逐条表格，所以这里钉的是"不受约束 + 保留逐条列表"。
   assert.match(b2, /关系轴那一节不受 1200 字约束/)
@@ -141,6 +141,53 @@ test('the relationship axis is a first-class pass, not a by-product of consisten
   // 6. "我没看懂"落在主线上按结构问题处理，不做句子级修补。
   assert.match(workflow, /作者的“我没看懂”是指令|作者的"我没看懂"是指令/)
   assert.match(skill, /作者说"我没看懂"是指令|作者说“我没看懂”是指令/)
+})
+
+test('关系轴的起点组：露出有据可引不等于起点有据可引', async () => {
+  // 第二次实测暴露的失效形态（v1.2.1）：v1.2.0 把"要没有露出"管住了，但没管
+  // "要从哪儿来"。一篇 17,900 字的稿子在关系轴跑了三轮、露出清单逐条引得到、
+  // 推动者分布也平衡的情况下，作者仍然读出"没有人味"——因为两个人的动心起点
+  // 都在开篇之前，正文只用叙述者的句子交代（"他没有理由去分辨，他分辨了"
+  // "我画你的手，是去年十月开始的"），没有一场戏交代为什么会看上这个人。
+  // 下面几处钉住新契约，缺一处就退回"清点露出"的老形态。
+  const panel = await read(PANEL)
+  const workflow = await read(WORKFLOW)
+  const b2 = await read(`${REVIEWER_DIR}/b2-story-logic.md`)
+
+  // 1. B2 必须有一组先做、且点名它管的是"要"的来路，不是"要"本身。
+  assert.match(b2, /### 第零组：想要从哪儿来/)
+  assert.match(b2, /双方都要答，被动的那一方也要答/)
+  // 判据必须是硬的：只有叙述者说得出的理由等于没有理由。
+  assert.match(b2, /只有叙述者说得出/)
+  // 不可替代性要能被检验（换一个对象还成立就不算）。
+  assert.match(b2, /可不可替代/)
+  assert.match(b2, /叙述者替它交代/)
+  // 缺的起点补在开篇之前，而不是就近补一句注。
+  assert.match(b2, /需在开篇前补一场/)
+  // 成稿后的回引必须单独做一次，不能拿第一组的条目充当证据。
+  assert.match(b2, /答不了"他为什么会动心"|答不了“他为什么会动心”/)
+
+  // 2. "留白"这条护栏要同时管住两种滥用：不能拿它放过"有没有"，也不能拿它放过"为什么"。
+  assert.match(b2, /"为什么是这个人"不能|“为什么是这个人”不能/)
+  assert.match(panel, /"为什么是这个人"不能|“为什么是这个人”不能/)
+  assert.match(panel, /"要"没有起点|“要”没有起点/)
+  // 面板的成稿时机也要点名起点单独回引。
+  assert.match(panel, /第零组的起点与由来单独回引一次/)
+
+  // 3. 规划阶段必须为两边各写一条起点，并写明它不能只靠职务或身份。
+  assert.match(workflow, /起点：两个人的动心各有各的来路/)
+  assert.match(workflow, /注意起点/)
+  assert.match(workflow, /不能只依赖职务或身份/)
+  assert.match(workflow, /不可替代/)
+  assert.match(workflow, /补在开篇之前/)
+  // 人物卡里"动机"（当下要什么）不能顶替起点（这份要的来路）。
+  assert.match(workflow, /两者不能互相顶替/)
+  // 方案阶段的 §4.0 必答项要含起点，成稿后第一次也核它。
+  assert.match(workflow, /为什么只对这个人成立/)
+  assert.match(workflow, /双方起点.*是否真的落在文本上|是否真的落在文本上/)
+
+  // 4. 报告清单里的槽位数量必须跟着改，否则起点组会退回"可选补充"。
+  assert.match(b2, /\*\*关系轴四组问答\*\*/)
 })
 
 test('dialogue function and character knowledge are checked, not just line shape', async () => {
