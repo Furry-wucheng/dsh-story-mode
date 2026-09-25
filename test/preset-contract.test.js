@@ -64,6 +64,33 @@ test('reviewers are persistent subagents: continuable spawn plus send_message co
   assert.doesNotMatch(composition, /provider:\s*fork/)
 })
 
+test('the dispatch budget caps new reviewers and mandates reuse', async () => {
+  const panel = await read(PANEL)
+  const workflow = await read(WORKFLOW)
+  const skill = await read(SKILL)
+  const composition = await read(COMPOSITION)
+  // 宿主的 maxActiveSubagents 默认 8，池满再派会被直接拒绝；四处常驻/必读文本
+  // 都必须把"6 位上限 + 复用原读者 + 先看在场读者"讲清楚，少一处就会退回
+  // "每版都新派一位"——v1.2.0 的实测档案里就是这么攒出 19 份报告的。
+  for (const [label, text] of [['审读面板', panel], ['共用写作流程', workflow], ['技能入口', skill], ['persona', composition]]) {
+    assert.match(text, /不超过 6 位/, `${label} 必须写明新建审读子代理的上限`)
+    assert.match(text, /send_message/, `${label} 必须要求复核走 send_message 复用原读者`)
+    assert.match(text, /list_agents/, `${label} 必须要求派发前先看在场读者`)
+  }
+  // 面板是判据的源头：机制、上限表与额度用尽的处置都要在里面。
+  assert.match(panel, /## 派发预算/)
+  assert.match(panel, /maxActiveSubagents/)
+  assert.match(panel, /ACTIVATION_LIMIT_REACHED/)
+  assert.match(panel, /复用它的名额/)
+  assert.match(panel, /B3 \/ B4 \/ B5 \| 命中各自触发条件 \| 合计最多 3/)
+  assert.match(panel, /一次会话（一篇文章从接稿到交付）新建的审读子代理不超过 6 位/)
+  assert.match(panel, /因额度未派 X，该项待审/)
+  // 复用是默认动作，不是可选项。
+  assert.match(panel, /复用是默认动作，不是省事的选择/)
+  assert.match(workflow, /“每版都派”不是“每版都新建”/)
+  assert.doesNotMatch(panel, /每版都派一位新读者/)
+})
+
 test('each review role owns its row: fixed persona plus a read-only tool filter', async () => {
   const composition = await read(COMPOSITION)
   for (const { file, tool } of ROLES) {

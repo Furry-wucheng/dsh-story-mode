@@ -96,7 +96,7 @@ pnpm add -g github:Furry-wucheng/dsh-story-mode
 # 从源码目录直接开发：打成 tgz 再装进 profile（link 安装也可以，见下面的开发验证）
 git clone https://github.com/Furry-wucheng/dsh-story-mode
 cd dsh-story-mode && pnpm pack        # 得到一个 tgz
-dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.2.0.tgz
+dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.3.1.tgz
 ```
 
 ### 升级
@@ -203,6 +203,12 @@ B2 的必答项一共三组，第三组专治作者会读成“上帝视角”�
 **审读员是可复用的持久子代理。** 每个角色派发一次就拿到它的 childId；改稿后的复核用 `send_message` 交给**同一位**读者——它保留着上一版的阅读和自己的报告，只需要回答“这次改了什么、你上次那几条还成不成立”，不必重读全文，前缀命中缓存。只有最终盲读另起一位新读者：独立性不能复用。派发时不要传 `run_in_background: false`，那会退化成一次性会话，后续消息送不到。
 
 这套行为由 preset 的 `backgroundMode: continuable` 加 `send_message` / `list_agents` 两行工具提供；`story_doctor` 会静态检查它们还在不在。
+
+**读者数量有配额，所以复用不只是省钱。** DSH 给可续接委派设了一个**存活子代理名额池**：Host 的 `dsh-subagent` 设置 `maxActiveSubagents` 默认 **8**，同一棵可续接父子树共享；池满之后新建或冷恢复会被直接拒绝（`ACTIVATION_LIMIT_REACHED`），那一次派发拿不到报告，只能等已有读者空出来。三条机制值得记牢：**`send_message` 回已驻留的读者复用它的名额**；**一次性运行不占这个池**；**名额只在当前进程里**，限制的是"同时活着的读者数"，不是累计报告数。
+
+所以本模式自限：**一次会话（一篇文章从接稿到交付）新建的审读子代理不超过 6 位**——B2 一位（方案阶段建，成稿后发给它复核）、B1 一位、B3/B4/B5 合计最多三位、最终盲读一位；通用 `subagent` 最多 1 位。之后的每一次"再读一遍"都是 `send_message` 发回原读者。额度不够时先复用、再借用边界允许的读者，最后在汇总里标"因额度未派 X，该项待审"，**不虚报验收**。
+
+派发预算写在审读面板的第一节；`npm test` 会钉住它（含 6 位上限、`ACTIVATION_LIMIT_REACHED` 的处置与"每版都派 ≠ 每版都新建"）。作者需要更多并发时可以在 DSH 的「插件 → 子智能体」里调高 `maxActiveSubagents`，但 6 位自限仍然成立：读者少而读得深，比读者多而各读一遍便宜，也不容易互相打架。
 
 | 角色 | 工具 | 可以读取的材料 | 什么时候派 |
 |---|---|---|---|
