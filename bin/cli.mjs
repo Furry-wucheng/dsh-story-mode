@@ -2,10 +2,13 @@
 /**
  * `dsh-story-mode` 命令行：卸载前清理与自检。
  *
- * **它不安装任何东西。** 模式是包自己的 `cordis.patch.yml` 里**插入的一行 preset
- * 声明**（DSH 0.1.7 起注册表不扫描目录），子插件列表写在那一行的 `config.plugins`
- * 里；两份技能由同一行的 `customSkillDirs` 从包内挂载。`dsh plugin add` 一步就
- * 完整可用，`dsh plugin remove` 一步就全部消失。
+ * **它不安装任何东西。** 模式是包自己的补丁里**插入的 preset 声明行**（DSH 0.1.7 起
+ * 注册表不扫描目录），子插件列表写在那一行的 `config.plugins` 里；技能由同一行的
+ * `customSkillDirs` 从包内挂载。本包有**两层补丁、两个模式**：`cordis.patch.yml` 声明
+ * `short-story`（完整版，五位角色化审读员），`cordis.lite.patch.yml` 声明
+ * `short-story-lite`（精简版，一位合并审读员）；`package.json` 的 `dsh.bundle.patch`
+ * 是路径数组，一次装包两层都生效。`dsh plugin add` 一步就完整可用，`dsh plugin remove`
+ * 一步就全部消失。
  *
  * 技能**故意不**落地到 `<DSH_HOME>/skills`：那是用户根，每个 preset 的
  * skill-filesystem 实例都会扫它，放进去等于让它们出现在所有模式里（包括编码
@@ -13,9 +16,10 @@
  *
  * 那这个命令为什么还在？因为有三件事 `dsh plugin remove` 管不到：
  *
- *   1. **悬空的默认模式**。把「短篇小说模式」设成默认之后再 remove，新建会话会以
- *      `agent-preset/not-found` 直接失败——注册表的 `resolve()` 没有回退，而会顺手
- *      清掉这个默认值的那条路径被卸载绕过了。0.1.7 起这个默认值存在
+ *   1. **悬空的默认模式**。把「短篇小说模式」或「短篇小说模式（精简）」设成默认之后再
+ *      remove，新建会话会以 `agent-preset/not-found` 直接失败——注册表的 `resolve()`
+ *      没有回退，而会顺手清掉这个默认值的那条路径被卸载绕过了。**两个 preset id 都要认**：
+ *      只认完整版的话，选了精简版的人撞上的是同一个不可恢复的失败。0.1.7 起这个默认值存在
  *      `<profile>/cordis.patch.yml` 的 volatile 字段里。
  *      这件事**必须在卸载前**做：包一旦 remove，这个命令也就没了。
  *   2. **v1.0.1 的模式副本**（`<DSH_HOME>/.agent-presets/short-story`）。
@@ -66,13 +70,14 @@ function splitArgs(argv) {
 
 const HELP = `dsh-story-mode —— 短篇小说模式（DeepSeek Harness 0.1.7-rc.1 及以后）
 
-这个命令不安装任何东西：装包之后模式和两份技能都跟着包走——模式是包内
-cordis.patch.yml 插入的一行 preset 声明，技能由那一行的 customSkillDirs 从包内
-挂载。新建会话就能在模式选择器里选「短篇小说模式」；卸载包，它们一起消失。
+这个命令不安装任何东西：装包之后两个模式和它们的技能都跟着包走——模式由包内两层补丁
+（cordis.patch.yml 声明 short-story，cordis.lite.patch.yml 声明 short-story-lite）各插入
+一行 preset 声明，技能由各行的 customSkillDirs 从包内挂载。新建会话就能在模式选择器里
+选「短篇小说模式」或「短篇小说模式（精简）」；卸载包，它们一起消失。
 
 它只做三件 dsh plugin remove 管不到的事（详见 scripts/cleanup.mjs 的文件头）：
-  1. 清掉指向本模式的**用户默认模式**——不清的话，卸载后新建会话会直接
-     以 agent-preset/not-found 失败。这一条必须在卸载**前**跑。
+  1. 清掉指向本包**任一**模式的**用户默认模式**（完整版或精简版都认）——不清的话，
+     卸载后新建会话会直接以 agent-preset/not-found 失败。这一条必须在卸载**前**跑。
   2. 清掉 v1.0.1 复制到 <DSH_HOME>/.agent-presets/short-story 的模式副本。
   3. 清掉 v1.0.1／v1.0.2 可能放在 <DSH_HOME>/skills/writing-style-contract 的
      副本（带本包归属标记时才删），让技能只留在写作模式里。

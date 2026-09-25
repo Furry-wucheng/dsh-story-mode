@@ -1,5 +1,10 @@
 /**
- * 组合自检：把本包的 bundle 补丁 `cordis.patch.yml` 当成 loader 那样读一遍。
+ * 组合自检：把本包的 bundle 补丁当成 loader 那样读一遍。
+ *
+ * 本包有**两层补丁、两个 preset**：`cordis.patch.yml`（完整版，五位角色化审读员）与
+ * `cordis.lite.patch.yml`（精简版，一位合并审读员）。同一个脚本用 `--preset` 切档验证两者，
+ * **检查逻辑一份都不复制**——两个档位的全部差异收在下面的 `PROFILES` 表里。所以"精简版也
+ * 同等严格"不是靠补一套精简版检查换来的，而是同一套检查换一组期望值。
  *
  * 0.1.7 之前这个文件读的是 `presets/short-story/agent.cordis.yml`；现在 preset 是**普通的
  * loader 行**，由本包的补丁插进 profile 的组合里，所以自检对象换成了补丁文件本身：
@@ -17,10 +22,17 @@
  *   6. 审读员有没有被误授权写文件、呈现或再委派，人设是不是真来自它自己的文件，
  *      以及这个补丁在**别的机器上**还装不装得上（行长不被插值、包内路径一律运行时解析）。
  *
- * 用法：node scripts/verify-composition.mjs [--composition <file>]
+ * 用法：node scripts/verify-composition.mjs [--preset <full|lite>] [--composition <file>]
+ *   `--preset full`（默认）检 `cordis.patch.yml`，`--preset lite` 检 `cordis.lite.patch.yml`。
  * 退出码 0 = 全过；1 = 有失败项（打印到 stderr）。
+ * **档位必须显式给，脚本绝不按文件内容猜档**：两个 preset 的 id／order／技能根／审读员
+ * 工具名都不一样，猜档等于让校验器跟着被检对象走——把精简版的审读员行删光，也可能被
+ * "猜"成完整版之后报通过。默认 full 只是为了让仓库日常那条命令（`npm run verify:full`）
+ * 不必带参数；`npm run verify:lite` 走的是 `--preset lite`。
+ *
  * `--composition` 只为一件事：**在副本上验证失败路径**——把补丁改坏（截断、写回 `'\n'`、
  * 改错工具名、把审读员改成 one-shot），脚本必须报错，而这些改动不该留在仓库里。
+ * 它比 `--preset` 更具体：两者一起给时以它为准（档位只决定**期望值**，不决定读哪个文件）。
  *
  * 两件它**不能**代替的事：真实会话里的工具清单，以及子代理真的能起来。
  *
@@ -51,7 +63,7 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -63,8 +75,6 @@ const ROOT = dirname(HERE)
 // 上它会被当成文件名的一部分，路径会变成 `<root>/skills/...` 这类错位置，五个
 // 审读员的 `!!js` 全部 ENOENT——看起来像"行坏了"，实际是自检脚本自己走错目录
 // （v1.2.1 修过一次这个 bug）。统一用 `pathToFileURL(dir + sep)`。
-/** 包内技能根：两份技能都从这里挂载（`skills/short-story`、`skills/writing-style-contract`）。 */
-const SKILLS_DIR = join(ROOT, 'skills')
 
 // ── 报告通道 ────────────────────────────────────────────────────────────────
 //
@@ -85,38 +95,195 @@ const die = (message) => {
   process.exit(1)
 }
 
-/** 审读员工具名 → 它的固定人设文件；组合里每一行都按这张表读文件。 */
-const ROLE_FILES = {
-  subagent_review_b1: 'b1-cold-read.md',
-  subagent_review_b2: 'b2-story-logic.md',
-  subagent_review_b3: 'b3-reading-experience.md',
-  subagent_review_b4: 'b4-style-execution.md',
-  subagent_review_b5: 'b5-physical-continuity.md',
+/**
+ * 人设片段：`file` 是包内路径（`join(ROOT, …)` 解出来），`label` 只在报告里用。
+ *
+ * 一个人设 = 这些片段**按数组顺序**用换行拼起来（补丁里那句 `String.fromCharCode(10)`）。
+ * 顺序不是装饰：契约的使用说明要求"先读作者要求、再完整读正文、最后对照契约"，而 persona
+ * 在 system prompt 最前、正文才是用户消息——所以角色说明必须在契约之前，拼反了要报错。
+ * `label` 默认取文件名（完整版五位角色的既有输出就是这样）；两个片段同名时才显式给路径。
+ */
+const personaPart = (file, label) => ({ file: join(ROOT, file), label: label ?? basename(file) })
+
+// ── 档位表 ──────────────────────────────────────────────────────────────────
+//
+// 两层补丁的**全部差异**都在这里：上面的检查逻辑一份都不复制，只按档位取期望值。加第三层
+// 补丁 = 在这里加一档，不改逻辑。表里每一条都对应"只在装配时才会暴露"的一个问题，理由写在
+// 条目旁边——精简不等于放松，它是另一组同样具体的期望值（例如审读员**刻意**少一个工具）。
+//
+// 档位由命令行显式给出（`--preset`），**绝不按文件内容猜**：两个 preset 的 id／order／技能根／
+// 审读员工具名都不同，猜档等于让校验器跟着被检对象走——把精简版的审读员行删光，也可能被
+// "猜"成完整版之后报通过。默认 full 是刻意的：仓库日常跑的就是它。
+const PROFILES = {
+  full: {
+    patch: 'cordis.patch.yml', // 不给 --composition 时检哪一份
+    presetRowId: 'preset-short-story', // loader 行 id：profile 的补丁按它覆写 config
+    presetId: 'short-story', // config.id：会话日志与技能索引按它走
+    order: 5, // 官方预设占 1–4
+    // 技能根 → 该根下必须读得到的技能文件（相对该根）。根自己就是技能目录时文件写
+    // `SKILL.md`：skill-filesystem 扫根时目录取 `<目录>/SKILL.md`、文件取它自己。
+    skillRoots: [
+      {
+        // 完整版一个根装两份技能：`short-story`（流程）与 `writing-style-contract`（文风契约）。
+        // 契约只从这里挂——放进用户根（`<DSH_HOME>/skills`）会让它出现在所有模式里，包括编码会话。
+        dir: 'skills',
+        label: '包内 skills/',
+        skills: ['short-story/SKILL.md', 'writing-style-contract/SKILL.md'],
+      },
+    ],
+    // 五条审读员行：工具名 + 各自的人设片段。**只有 B4** 多拼一份文风契约——契约是给
+    // "文风执行"这个维度的判据，其余四位拿它只会多一段每轮都发的前缀。
+    reviewers: [
+      {
+        toolName: 'subagent_review_b1',
+        persona: [personaPart('skills/short-story/references/reviewers/b1-cold-read.md')],
+      },
+      {
+        toolName: 'subagent_review_b2',
+        persona: [personaPart('skills/short-story/references/reviewers/b2-story-logic.md')],
+      },
+      {
+        toolName: 'subagent_review_b3',
+        persona: [personaPart('skills/short-story/references/reviewers/b3-reading-experience.md')],
+      },
+      {
+        toolName: 'subagent_review_b4',
+        persona: [
+          personaPart('skills/short-story/references/reviewers/b4-style-execution.md'),
+          personaPart('skills/writing-style-contract/SKILL.md', 'writing-style-contract/SKILL.md'),
+        ],
+      },
+      {
+        toolName: 'subagent_review_b5',
+        persona: [personaPart('skills/short-story/references/reviewers/b5-physical-continuity.md')],
+      },
+    ],
+    reviewerToolNameHint: 'subagent_review_b1…b5',
+    // `str_replace_editor` 在完整版里是允许的（历史行为，未改动）；它带 create/str_replace/
+    // insert 命令，所以这里的"只读"是靠 deny 与工具说明约束的，而不是物理上不可写。
+    reviewerAllow: ['read', 'read_image', 'str_replace_editor', 'glob', 'grep'],
+    reviewerAllowNote: '',
+    // 完整版不禁止任何工具行：查证（`tool-web`）与长程目标（`tool-goal`）在这里是功能。
+    forbiddenRowNames: [],
+    forbiddenToolNames: [],
+    forbiddenReviewerPattern: null,
+    // 两句字面契约（`send_message` / `run_in_background: false`）查哪份入口技能。
+    entrySkill: 'skills/short-story/SKILL.md',
+    // 少一行 send_message / list_agents 就少一件工具，审读员复用不起来。
+    requiredRowNames: [
+      '@deepseek-ai/dsh-tool-subagent-control',
+      '@deepseek-ai/dsh-tool-subagent-control/list-agents',
+    ],
+  },
+  lite: {
+    patch: 'cordis.lite.patch.yml',
+    presetRowId: 'preset-short-story-lite', // 与完整版的 id 必须成对唯一：loader 按行 id 建表，
+    presetId: 'short-story-lite', // 撞了是**静默**的（后面的覆盖前面的，一个模式无声消失）
+    order: 6, // 完整版占 5，精简版排在它后面
+    // **两个根，各自只装该装的那一份**：
+    //   `skills-lite/`                   精简流程技能（只有 `short-story-lite/`）
+    //   `skills/writing-style-contract/` 文风契约（与完整版共用同一份文件）
+    // 第二个根指向契约**目录本身**：扫描根时目录取 `<目录>/SKILL.md`，所以指向它就能把契约
+    // 单独挂进来，不必复制一份、也不会产生第二份会漂移的契约。这样精简会话的技能清单里
+    // **没有**完整版的 `short-story` 技能——否则模型会去用它那些本模式不存在的角色工具。
+    skillRoots: [
+      {
+        dir: 'skills-lite',
+        label: '包内 skills-lite/',
+        skills: ['short-story-lite/SKILL.md'],
+      },
+      {
+        dir: join('skills', 'writing-style-contract'),
+        label: '包内 skills/writing-style-contract/',
+        skills: ['SKILL.md'],
+      },
+    ],
+    // **一位读者，五个维度。** 人设 = 合并审读员说明 + 文风契约全文，顺序与完整版 B4 相同
+    // （角色说明在前、契约在后）。
+    reviewers: [
+      {
+        toolName: 'subagent_review',
+        persona: [
+          personaPart('skills-lite/references/reviewer-merged.md'),
+          personaPart('skills/writing-style-contract/SKILL.md', 'writing-style-contract/SKILL.md'),
+        ],
+      },
+    ],
+    reviewerToolNameHint: 'subagent_review（精简版只有这一位合并审读员）',
+    // **不含 `str_replace_editor`，这是设计意图，不要"补"回来**：它的命令是 view / create /
+    // str_replace / insert，允许它等于"审读员物理上可写"，与"只读审读员"的说法不符；而且它的
+    // schema 是 2,803 字符，占这个子代理工具面（5,171 字符）的 54%，每次派发都要重发一遍。
+    reviewerAllow: ['read', 'read_image', 'glob', 'grep'],
+    reviewerAllowNote: '——精简版刻意不给审读员 str_replace_editor（create/str_replace/insert'
+      + ' 等于物理上可写，而且它的 schema 占这个子代理工具面一半以上），不要"补"回来',
+    // 砍掉的两行与它们带来的工具名都是"每轮都在前缀里"的常驻成本（`tool-web` 2 个、
+    // `tool-goal` 3 个 schema）。设计上不要它们，所以两个方向都钉住：加回来会被拦，
+    // 而不是被当成新功能放行。
+    forbiddenRowNames: ['@deepseek-ai/dsh-tool-web', '@deepseek-ai/dsh-tool-goal'],
+    forbiddenToolNames: ['web_search', 'web_fetch', 'get_goal', 'create_goal', 'update_goal'],
+    // 五个角色工具在精简版里不存在（技能也不再提它们，只提"本模式没有的角色工具"）。
+    // 注意**不能**拿原文正则去扫 `subagent_review_b`：补丁注释里就写着"避免模型……去找本模式
+    // 不存在的 `subagent_review_b*` 工具"这句解释——扫原文会把正确的注释判成错误。
+    // 所以只扫**解析后的工具名**：那是真会被注册、真会被派发的名字。
+    forbiddenReviewerPattern: /^subagent_review_b\d+$/,
+    entrySkill: 'skills-lite/short-story-lite/SKILL.md',
+    requiredRowNames: [
+      '@deepseek-ai/dsh-tool-subagent-control',
+      '@deepseek-ai/dsh-tool-subagent-control/list-agents',
+    ],
+  },
 }
-/** 角色目录：`skills/short-story/references/reviewers/`。 */
-const REVIEWER_DIR = join(SKILLS_DIR, 'short-story', 'references', 'reviewers')
 
 // ── 命令行 ──────────────────────────────────────────────────────────────────
 
-function compositionFromArgv(argv) {
+/**
+ * 只认两个开关：`--preset <full|lite>` 选期望值档位，`--composition <file>` 选被检文件。
+ *
+ * 两个都要**扫完全部参数**（老版本遇到 `--composition` 就 return，于是 `--composition X
+ * --preset lite` 里那个 `--preset` 会被静默丢掉——而 `npm run verify:lite` 正是这个顺序）。
+ * 拼写错的值一律 die：档位不明时"用默认档位凑合"是这里最坏的失败形态——期望值与被检对象
+ * 对不上，脚本会对着精简版报一堆完整版的错，或者更糟：报通过。
+ */
+function optionsFromArgv(argv) {
+  let composition = null
+  let preset = 'full'
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
-    if (arg === '--composition') {
+    if (arg === '--composition' || arg === '--preset') {
       const value = argv[index + 1]
-      if (typeof value !== 'string' || value.length === 0) die('--composition 后面要跟一个补丁文件路径')
-      return resolve(value)
+      if (typeof value !== 'string' || value.length === 0) {
+        die(arg === '--preset' ? '--preset 后面要跟一个档位（full 或 lite）' : '--composition 后面要跟一个补丁文件路径')
+      }
+      if (arg === '--preset') preset = value
+      else composition = resolve(value)
+      index += 1
+      continue
     }
     if (arg.startsWith('--composition=')) {
       const value = arg.slice('--composition='.length)
       if (value.length === 0) die('--composition= 后面要跟一个补丁文件路径')
-      return resolve(value)
+      composition = resolve(value)
+      continue
     }
-    die(`不认识的参数 ${arg}（只支持 --composition <file>）`)
+    if (arg.startsWith('--preset=')) {
+      const value = arg.slice('--preset='.length)
+      if (value.length === 0) die('--preset= 后面要跟一个档位（full 或 lite）')
+      preset = value
+      continue
+    }
+    die(`不认识的参数 ${arg}（只支持 --composition <file> 与 --preset <full|lite>）`)
   }
-  return join(ROOT, 'cordis.patch.yml')
+  return { composition, preset }
 }
 
-const COMPOSITION = compositionFromArgv(process.argv.slice(2))
+const OPTIONS = optionsFromArgv(process.argv.slice(2))
+const PROFILE = PROFILES[OPTIONS.preset]
+if (PROFILE === undefined) {
+  die(`不认识的 --preset 值 ${JSON.stringify(OPTIONS.preset)}（只支持 ${Object.keys(PROFILES).join('、')}）`)
+}
+// 档位只决定**期望值**；被检文件永远是 `--composition` 说的那一份（没给才按档位的默认文件）。
+// 两者不匹配时所有的行/路径检查都会报错，不需要额外的一致性猜测逻辑。
+const COMPOSITION = OPTIONS.composition ?? join(ROOT, PROFILE.patch)
 
 // ── YAML 子集读取 ───────────────────────────────────────────────────────────
 
@@ -784,22 +951,28 @@ notes.push(`共 ${compiledExpressions} 个 !!js：全部编译通过、逐字比
 // ── 2. 组合形状 ─────────────────────────────────────────────────────────────
 //
 // 插进去的那一行是**预设声明**：id/name 决定它在 roster 里的身份，config.plugins 才是模式。
-// 这几个字段错了不会报错，只会让模式换个名字、排到别处或者干脆空着——所以逐条钉住。
-if (presetRow.id !== 'preset-short-story') {
-  fail(`preset 行的 id 应为 preset-short-story（profile 的补丁按它覆写），实际 ${JSON.stringify(presetRow.id)}`)
+// 这几个字段错了不会报错，只会让模式换个名字、排到别处或者干脆空着——所以逐条钉住，
+// 期望值按档位取（精简版的 id 必须成对唯一：两个 id 撞了是**静默**的）。
+if (presetRow.id !== PROFILE.presetRowId) {
+  fail(`preset 行的 id 应为 ${PROFILE.presetRowId}（profile 的补丁按它覆写），实际 ${JSON.stringify(presetRow.id)}`)
 }
 if (presetRow.name !== '@deepseek-ai/dsh-agent-preset') {
   fail(`preset 行的 name 应为 @deepseek-ai/dsh-agent-preset，实际 ${JSON.stringify(presetRow.name)}`)
 }
 const presetConfig = { ...(allRows[0].resolvedConfig ?? {}), plugins: presetPlugins }
-if (presetConfig.id !== 'short-story') {
-  fail(`preset config.id 应为 short-story（会话日志与 skills 目录都按它索引），实际 ${JSON.stringify(presetConfig.id)}`)
+if (presetConfig.id !== PROFILE.presetId) {
+  fail(`preset config.id 应为 ${PROFILE.presetId}（会话日志与 skills 目录都按它索引），实际 ${JSON.stringify(presetConfig.id)}`)
 }
 if (typeof presetConfig.name !== 'string' || presetConfig.name.trim().length === 0) {
   fail(`preset config.name 是非空字符串（roster 里显示的名字），实际 ${JSON.stringify(presetConfig.name)}`)
 }
 if (typeof presetConfig.order !== 'number' || !Number.isFinite(presetConfig.order)) {
   fail(`preset config.order 必须是数字（官方预设占 1–4，本模式排在后面），实际 ${JSON.stringify(presetConfig.order)}`)
+} else if (presetConfig.order !== PROFILE.order) {
+  // order 是**排他**的：两层补丁各声明一个 preset，两个都写 5 会让 roster 里的先后由合并顺序
+  // 决定（看起来像"精简版不见了"），所以档位表把数字钉死（完整版 5、精简版 6）。
+  fail(`preset config.order 应为 ${PROFILE.order}（官方预设占 1–4；完整版 5、精简版排在它后面），`
+    + `实际 ${JSON.stringify(presetConfig.order)}`)
 }
 if (!Array.isArray(presetConfig.plugins) || presetConfig.plugins.length === 0) {
   fail('preset config.plugins 必须是非空行列表')
@@ -868,6 +1041,13 @@ notes.push(`config 过 schema：${schemaChecked} 行（用的是 harness 里那�
 // 这两件事都是"路径只有运行时才算得出来"的：skill-filesystem 的 customSkillDirs 与每个
 // 审读员行的 persona 都由 `!!js` 在挂载时求值。第 1d 节已经让它们真的跑过一遍，
 // 这里只判断结果对不对——文件缺失会让那一行 config 无效、整个 preset 挂不上。
+// 期望值全部来自 PROFILES：完整版一个技能根（两份技能）、精简版两个根（各自一份），
+// 人名与 persona 片段也一样是"按档位取值"，检查代码一条都不分档。
+
+// 技能文件在报告里的称呼：根下相对路径就够用；根**自己**就是技能目录（文件写 `SKILL.md`）时
+// 补上根目录名——否则两个根各自那份 `SKILL.md` 在报告里同名，分不清是谁。
+const skillLabel = (rootDir, file) => (file.includes('/') ? file : `${basename(rootDir)}/${file}`)
+
 const skillRow = compositionRows.find((entry) => entry.at === 'skill-filesystem')
 const skillDirs = skillRow?.resolvedConfig?.customSkillDirs
 if (skillRow === undefined) {
@@ -881,78 +1061,110 @@ if (skillRow === undefined) {
     const b = canonical(right)
     return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b
   }
-  if (!samePath(skillDirs[0], SKILLS_DIR)) {
-    fail(`行 ${skillRow.at} 的 customSkillDirs[0] 没指到包内 skills/：${skillDirs[0]}（应为 ${SKILLS_DIR}）`)
+  // 每个根都必须落在**包内**：技能是跟着包走的，指到包外（或写死本机绝对路径）时，装到别的
+  // 机器上会指向一个不存在的目录，而技能清单只是静默为空——模型第一次 `skill` 调用才发现。
+  const insidePackage = (value) => {
+    if (typeof value !== 'string' || value.length === 0) return false
+    const rel = relative(ROOT, value)
+    return rel.length > 0 && !rel.startsWith('..') && !isAbsolute(rel)
   }
-  for (const skill of ['short-story', 'writing-style-contract']) {
-    const file = join(skillDirs[0], skill, 'SKILL.md')
-    try {
-      const text = await readFile(file, 'utf8')
-      if (text.trim().length === 0) fail(`技能 ${skill}/SKILL.md 是空的：${file}`)
-      else notes.push(`技能 ${skill}/SKILL.md：${text.length} 字符（由 customSkillDirs 指向）`)
-    } catch (error) {
-      fail(`技能 ${skill}/SKILL.md 读不到：${error.message}`)
+  for (const dir of skillDirs) {
+    if (!insidePackage(dir)) {
+      fail(`行 ${skillRow.at} 的 customSkillDirs 项没落在包内：${JSON.stringify(dir)}——`
+        + '技能必须跟着包走；包外路径在别的机器上不存在，模式里只会得到"技能不可用"')
+    }
+  }
+  if (skillDirs.length !== PROFILE.skillRoots.length) {
+    fail(`行 ${skillRow.at} 的 customSkillDirs 应有 ${PROFILE.skillRoots.length} 个根`
+      + `（${PROFILE.skillRoots.map((root) => root.label).join('、')}），`
+      + `实际 ${skillDirs.length} 个：${JSON.stringify(skillDirs)}`)
+  }
+  for (let index = 0; index < PROFILE.skillRoots.length; index += 1) {
+    const root = PROFILE.skillRoots[index]
+    const expected = join(ROOT, root.dir)
+    if (index < skillDirs.length && !samePath(skillDirs[index], expected)) {
+      // 位置也算数：精简版第二个根指向契约**目录本身**（扫描根时目录取 `<目录>/SKILL.md`），
+      // 指回 `skills/` 会把完整版的 `short-story` 技能一起挂进精简会话，而那份技能里的派发
+      // 规则对应的是本模式没有的五个角色工具。
+      fail(`行 ${skillRow.at} 的 customSkillDirs[${index}] 没指到${root.label}：${skillDirs[index]}（应为 ${expected}）`)
+      continue
+    }
+    if (index >= skillDirs.length) continue // 缺项上面已经报过，这里不再重复刷屏
+    for (const skill of root.skills) {
+      const file = join(expected, skill)
+      const label = skillLabel(root.dir, skill)
+      try {
+        const text = await readFile(file, 'utf8')
+        if (text.trim().length === 0) fail(`技能 ${label} 是空的：${file}`)
+        else notes.push(`技能 ${label}：${text.length} 字符（由 customSkillDirs 指向）`)
+      } catch (error) {
+        fail(`技能 ${label} 读不到：${error.message}`)
+      }
     }
   }
 }
 
+// 审读员行的筛子用**前缀** `subagent_review`（不带尾下划线）：精简版的工具名就是它本身。
+// 两个档位因此共用一条筛子，而"名字敲错"（`subagent_review_b9`）仍然会被算成审读员行——
+// 只按档位点名筛的话，坏掉的那一行会直接消失，脚本就只剩"应有 5 个、实际 4 个"。
 const reviewers = compositionRows.filter((entry) => typeof entry.resolvedConfig?.toolName === 'string'
-  && entry.resolvedConfig.toolName.startsWith('subagent_review_'))
+  && entry.resolvedConfig.toolName.startsWith('subagent_review'))
+const expectedReviewers = new Map(PROFILE.reviewers.map((item) => [item.toolName, item]))
 
-// persona 必须**逐字**等于它自己那份角色文件；B4 还要多一段文风契约。
-const contractFile = join(SKILLS_DIR, 'writing-style-contract', 'SKILL.md')
+// persona 必须**逐字**等于档位表里那几份文件按顺序拼起来的结果（完整版 B4 与精简版那位合并
+// 审读员都是"角色说明 + 换行 + 文风契约全文"）。第 1d 节已经让补丁里的 `!!js` 真跑过一遍，
+// 这里只判断结果对不对——读的是同一批文件，所以"文件被清空、路径改错、顺序拼反"都在这里现形。
 for (const entry of reviewers) {
   const { toolName, persona } = entry.resolvedConfig
-  const file = ROLE_FILES[toolName]
-  if (file === undefined) {
-    fail(`行 ${entry.at} 的审读员工具名 ${toolName} 不在角色表里（应为 subagent_review_b1…b5）`)
+  const spec = expectedReviewers.get(toolName)
+  if (spec === undefined) {
+    fail(`行 ${entry.at} 的审读员工具名 ${toolName} 不在角色表里（应为 ${PROFILE.reviewerToolNameHint}）`)
     continue
   }
-  const roleFile = join(REVIEWER_DIR, file)
-  let roleText
-  try {
-    roleText = await readFile(roleFile, 'utf8')
-  } catch (error) {
-    fail(`行 ${entry.at}（${toolName}）的角色文件读不到：${error.message}`)
-    continue
+  const parts = []
+  let broken = false
+  for (const part of spec.persona) {
+    try {
+      const text = await readFile(part.file, 'utf8')
+      if (text.trim().length === 0) {
+        fail(`行 ${entry.at}（${toolName}）的人设文件是空的：${part.file}`)
+        broken = true
+        break
+      }
+      parts.push({ part, text })
+    } catch (error) {
+      fail(`行 ${entry.at}（${toolName}）的人设文件读不到：${part.file}：${error.message}`)
+      broken = true
+      break
+    }
   }
-  if (roleText.trim().length === 0) {
-    fail(`行 ${entry.at}（${toolName}）的角色文件是空的：${roleFile}`)
-    continue
-  }
+  if (broken) continue
   if (typeof persona !== 'string' || persona.length === 0) {
     fail(`行 ${entry.at}（${toolName}）的 persona 没读出来（得到 ${JSON.stringify(persona)?.slice(0, 40)}）`)
     continue
   }
-  if (toolName === 'subagent_review_b4') {
-    // B4 的 persona = 角色说明 + 换行 + 文风契约全文。**顺序要紧**：契约的使用说明要求
-    // "先读作者要求、再完整读正文、最后对照契约"，而 persona 在 system prompt 最前。
-    let contractText
-    try {
-      contractText = await readFile(contractFile, 'utf8')
-    } catch (error) {
-      fail(`B4 的文风契约读不到：${error.message}`)
-      continue
-    }
-    const expected = roleText + String.fromCharCode(10) + contractText
-    if (persona !== expected) {
-      if (persona === contractText + String.fromCharCode(10) + roleText) {
-        fail(`B4 的 persona 把顺序拼反了：必须是**角色说明在前、文风契约在后**（${entry.at}）`)
-      } else {
-        fail(`B4 的 persona ≠ 角色文件 + 换行 + 文风契约全文（persona ${persona.length} 字符，应为 ${expected.length} 字符）`)
-      }
+  const expected = parts.map(({ text }) => text).join(String.fromCharCode(10))
+  if (persona !== expected) {
+    const reversed = [...parts].reverse().map(({ text }) => text).join(String.fromCharCode(10))
+    if (parts.length > 1 && persona === reversed) {
+      fail(`行 ${entry.at}（${toolName}）的 persona 把顺序拼反了：必须是**`
+        + `${parts.map(({ part }) => part.label).join('在前、')}在后**`
+        + '——契约的使用说明要求"先读作者要求、再完整读正文、最后对照契约"，而 persona 在 system prompt 最前')
+    } else if (parts.length === 1) {
+      fail(`行 ${entry.at}（${toolName}）的 persona 与 ${parts[0].part.label} 的内容不一致`
+        + `（persona ${persona.length} 字符，文件 ${expected.length} 字符）——人设必须逐字来自它自己那份文件`)
     } else {
-      notes.push(`  ${toolName}: persona ${persona.length} 字符 = ${file}（${roleText.length}）+ 换行 + `
-        + `writing-style-contract/SKILL.md（${contractText.length}）`)
+      fail(`行 ${entry.at}（${toolName}）的 persona ≠ ${parts.map(({ part }) => part.label).join(' + 换行 + ')}`
+        + `（persona ${persona.length} 字符，应为 ${expected.length} 字符）`)
     }
     continue
   }
-  if (persona !== roleText) {
-    fail(`行 ${entry.at}（${toolName}）的 persona 与 ${file} 的内容不一致`
-      + `（persona ${persona.length} 字符，文件 ${roleText.length} 字符）——人设必须逐字来自它自己那份文件`)
-  } else {
-    notes.push(`  ${toolName}: persona ${persona.length} 字符 = ${file}`)
-  }
+  // 单片段时沿用既有的短报告（`= b1-cold-read.md`）；多片段时把每段的长度都列出来——那样
+  // "少拼了契约"在绿色输出里也看得见（少一段，行里就少一个 `+ 换行 +`）。拼法与旧版逐字相同。
+  notes.push(parts.length === 1
+    ? `  ${toolName}: persona ${persona.length} 字符 = ${parts[0].part.label}`
+    : `  ${toolName}: persona ${persona.length} 字符 = `
+      + parts.map(({ part, text }) => `${part.label}（${text.length}）`).join('+ 换行 + '))
 }
 
 // ── 5. 工具名账本 ───────────────────────────────────────────────────────────
@@ -1076,12 +1288,25 @@ for (const entry of compositionRows) {
 // 同时要求两个方向都对——放行的每一项都在只读白名单里，写入与再委派工具被显式拒掉。
 const BANNED = ['write', 'edit', 'present', 'subagent', 'send_message', 'interrupt_agent', 'list_agents']
 const READ_ONLY_ALLOW = new Set(['read', 'read_image', 'str_replace_editor', 'glob', 'grep'])
-const REVIEWER_TOOL_NAMES = ['subagent_review_b1', 'subagent_review_b2', 'subagent_review_b3', 'subagent_review_b4', 'subagent_review_b5']
 
-if (reviewers.length !== 5) fail(`审读员行应有 5 个，实际 ${reviewers.length} 个`)
-for (const toolName of REVIEWER_TOOL_NAMES) {
+if (reviewers.length !== PROFILE.reviewers.length) {
+  fail(`审读员行应有 ${PROFILE.reviewers.length} 个，实际 ${reviewers.length} 个`)
+}
+for (const { toolName } of PROFILE.reviewers) {
   if (!reviewers.some((entry) => entry.resolvedConfig.toolName === toolName)) {
-    fail(`缺少审读员行 ${toolName}——面板里的角色表点了名，而它没有自己的工具`)
+    fail(`缺少审读员行 ${toolName}——本档位的角色表点了名，而它没有自己的工具`)
+  }
+}
+// 「本档位**不该**出现的审读员工具名」单独查一遍：精简版没有 b1…b5 这五个角色工具，
+// 名字要是漏进来（复制完整版那一行时最容易发生），模型就会照着一个不存在的工具去派发。
+// 查的是**解析后的工具名**，不是原文——补丁注释里正解释着"本模式没有这些工具"（见档位表）。
+if (PROFILE.forbiddenReviewerPattern !== null) {
+  for (const entry of compositionRows) {
+    const name = entry.resolvedConfig?.toolName
+    if (typeof name === 'string' && PROFILE.forbiddenReviewerPattern.test(name)) {
+      fail(`行 ${entry.at} 的工具名 "${name}" 是本档位刻意不要的——精简版只有一位合并审读员 `
+        + `（${PROFILE.reviewers.map((item) => item.toolName).join('、')}），五个角色化工具不存在`)
+    }
   }
 }
 
@@ -1106,18 +1331,42 @@ for (const entry of reviewers) {
   for (const name of allowed) {
     if (!READ_ONLY_ALLOW.has(name)) fail(`行 ${entry.at}（${toolName}）放行了非只读工具 "${name}"`)
   }
+  // 放行集合按档位**逐项相等**（不是"包含"就够了）：完整版与精简版的差别正是"少一个
+  // `str_replace_editor`"，包含式检查看不出这个差别，而它恰恰是精简版的核心取舍。
+  const sortedExpected = [...PROFILE.reviewerAllow].sort().join('\u0000')
+  if ([...allowed].sort().join('\u0000') !== sortedExpected) {
+    fail(`行 ${entry.at}（${toolName}）的 toolFilter.allow 应为 [${PROFILE.reviewerAllow.join(', ')}]，`
+      + `实际 [${allowed.join(', ')}]${PROFILE.reviewerAllowNote}`)
+  }
   for (const name of BANNED) {
     if (allowed.includes(name)) fail(`行 ${entry.at}（${toolName}）把 "${name}" 放进了 allow`)
     if (!denied.includes(name)) fail(`行 ${entry.at}（${toolName}）没有显式 deny "${name}"`)
   }
-  if (allowed.includes('skill')) fail(`行 ${entry.at}（${toolName}）允许了 skill；契约应拼进 B4 的 persona，其余角色不该读技能`)
+  if (allowed.includes('skill')) {
+    fail(`行 ${entry.at}（${toolName}）允许了 skill；契约应拼进审读员自己的 persona，其余角色不该读技能`)
+  }
 }
 
 // 委派链路的两个前提：命名工具与子路径行都在组合里，且这个模式刻意不开 fork
 // （fork 会把主代理的大纲与写作推理一起复制给读者，审读独立性立刻消失）。
-for (const required of ['@deepseek-ai/dsh-tool-subagent-control', '@deepseek-ai/dsh-tool-subagent-control/list-agents']) {
+// 缺的是哪几行按档位取（两个档位都要这两行），两行少一行就少一件工具，复用就断了。
+for (const required of PROFILE.requiredRowNames) {
   if (!compositionRows.some((entry) => entry.row.name === required)) {
     fail(`组合里没有 ${required} 那一行——send_message / list_agents 少一个，审读员就复用不起来`)
+  }
+}
+// 档位**刻意不要**的行与工具名（精简版砍掉 `tool-web` / `tool-goal`：它们各带 2–3 个 schema，
+// 每轮都在前缀里，而短篇写作很少用）。这两个方向都要查：只查"缺了什么"的话，顺手把整行加回来
+// 不会被拦——那会把每轮前缀重新撑大，而功能上没人会发现多了什么。
+for (const forbidden of PROFILE.forbiddenRowNames) {
+  if (compositionRows.some((entry) => entry.row.name === forbidden || entry.row.name.startsWith(`${forbidden}/`))) {
+    fail(`组合里出现了本档位刻意不要的 ${forbidden} 那一行——精简版砍掉它是设计意图（见补丁文件头），不是漏了`)
+  }
+}
+for (const forbidden of PROFILE.forbiddenToolNames) {
+  if (toolLedger.has(forbidden)) {
+    fail(`工具账本里出现了本档位刻意不要的 "${forbidden}"——它属于精简版砍掉的工具行，`
+      + '砍掉是设计意图（每轮前缀少 5 个 schema），不要"补"回来')
   }
 }
 for (const entry of compositionRows) {
@@ -1211,15 +1460,19 @@ if (!existsSync(ownEntry)) {
 
 // 技能文档里的两条契约（只查最便宜、最容易在改稿时被删掉的两句）：
 // 派发一律走后台、改稿复核用 send_message 发回同一位读者。删掉它们，可复用就只是配置。
-const entrySkill = join(SKILLS_DIR, 'short-story', 'SKILL.md')
+// 查的是**本档位的入口技能**：精简版的流程规则住在 `skills-lite/short-story-lite/SKILL.md`，
+// 完整版那份 `skills/short-story/SKILL.md` 在精简会话里根本不挂（见补丁文件头第五条）。
+const entrySkill = join(ROOT, PROFILE.entrySkill)
 try {
   const text = await readFile(entrySkill, 'utf8')
-  if (!text.includes('send_message')) fail('skills/short-story/SKILL.md 没提 send_message——改稿复核要靠它发回同一位读者')
+  if (!text.includes('send_message')) {
+    fail(`${PROFILE.entrySkill} 没提 send_message——改稿复核要靠它发回同一位读者`)
+  }
   if (!text.includes('run_in_background: false')) {
-    fail('skills/short-story/SKILL.md 没有 `run_in_background: false` 的警告——前台调用拿不到可复用的 childId')
+    fail(`${PROFILE.entrySkill} 没有 \`run_in_background: false\` 的警告——前台调用拿不到可复用的 childId`)
   }
 } catch (error) {
-  fail(`skills/short-story/SKILL.md 读不到：${error.message}`)
+  fail(`${PROFILE.entrySkill} 读不到：${error.message}`)
 }
 notes.push('静态形状：行名全是包标识符、包内路径无绝对路径与 file://、patch/行 key 在 loader 认得的集合里')
 

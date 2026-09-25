@@ -61,8 +61,17 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = dirname(HERE)
 const CHECK_ONLY = process.argv.includes('--check')
 
-/** 本模式的 preset id，也是旧安装的目录名。 */
+/** 本模式的 preset id，也是旧安装（v1.0.1）的目录名。 */
 const PRESET_ID = 'short-story'
+/**
+ * 本包声明的**全部** preset id。
+ *
+ * 卸载前要清的是"悬空的默认模式"，而模式选择器里能选的**每个** id 都能被设成默认：
+ * 只认完整版，选了精简版的人卸载后就会撞上同一个不可恢复的 `agent-preset/not-found`
+ * （注册表找不到默认 id 时不会回退，而这条清理路径被卸载绕开了）。
+ * 第一个是旧安装的目录名，`.agent-presets/<id>` 只有那一份。
+ */
+const PRESET_IDS = [PRESET_ID, 'short-story-lite']
 /** 声明 preset 的注册表条目 id：用户默认值写在它的 config 里。 */
 const REGISTRY_ROW_ID = 'agent-preset-registry'
 /** 文风契约在技能根下的目录名。 */
@@ -254,6 +263,21 @@ export function findDefaultPresetLine(raw, presetId = PRESET_ID) {
   return null
 }
 
+/**
+ * 在一份 patch 文件里找出指向本包**任一个** preset 的默认值行。
+ *
+ * 一个文件里只会有一个 `selectedDefault`/`default`，但 id 有两种可能，所以逐个试。
+ * 返回命中用的 id，是因为报告里必须按**实际** id 说话：说"默认模式是 short-story"
+ * 而实际是精简版，会让人以为清掉的是别的东西。
+ */
+function findAnyDefaultPresetLine(raw) {
+  for (const id of PRESET_IDS) {
+    const hit = findDefaultPresetLine(raw, id)
+    if (hit !== null) return { id, hit }
+  }
+  return null
+}
+
 /** 旧位置：`<DSH_HOME>/settings.yaml` 里 `agent-presets:` 块下的那一行。 */
 async function readLegacyDefaultPreset() {
   const raw = await readIfPresent(SETTINGS)
@@ -285,11 +309,13 @@ async function clearDanglingDefault() {
   for (const file of await defaultPresetFiles()) {
     const raw = await readIfPresent(file)
     if (raw === null) continue
-    const hit = findDefaultPresetLine(raw)
-    if (hit !== null) targets.push({ file, raw, hit })
+    const found = findAnyDefaultPresetLine(raw)
+    if (found !== null) targets.push({ file, raw, hit: found.hit, id: found.id })
   }
   const legacy = await readLegacyDefaultPreset()
-  const legacyHit = legacy === PRESET_ID ? { file: SETTINGS, raw: null, hit: { field: 'default' } } : null
+  const legacyHit = PRESET_IDS.includes(legacy)
+    ? { file: SETTINGS, raw: null, hit: { field: 'default' }, id: legacy }
+    : null
 
   if (targets.length === 0 && legacyHit === null) {
     if (legacy !== null) return { status: 'other', preset: legacy }
@@ -298,9 +324,9 @@ async function clearDanglingDefault() {
 
   if (CHECK_ONLY) {
     for (const target of targets) {
-      console.log(`  [待清理] ${target.file} 第 ${target.hit.line + 1} 行：${target.hit.field} = ${PRESET_ID}`)
+      console.log(`  [待清理] ${target.file} 第 ${target.hit.line + 1} 行：${target.hit.field} = ${target.id}`)
     }
-    if (legacyHit !== null) console.log('  [待清理] settings.yaml 的默认预设指向 ' + PRESET_ID)
+    if (legacyHit !== null) console.log('  [待清理] settings.yaml 的默认预设指向 ' + legacyHit.id)
     console.log('         不清的话，卸载包之后新建会话会以 agent-preset/not-found 失败。')
     return { status: 'cleared' }
   }
@@ -314,7 +340,7 @@ async function clearDanglingDefault() {
       lines[target.hit.line] = `${target.hit.indent}default: standard`
     }
     await writeFile(target.file, lines.join('\n'), 'utf8')
-    console.log(`  [已清理] ${target.file}（${target.hit.field} → ${target.hit.field === 'selectedDefault' ? '回落部署默认值' : 'standard'}）`)
+    console.log(`  [已清理] ${target.file}（${target.hit.field} = ${target.id} → ${target.hit.field === 'selectedDefault' ? '回落部署默认值' : 'standard'}）`)
   }
 
   if (legacyHit !== null) {
@@ -369,13 +395,13 @@ if (skill === 'keep' || legacy === 'keep') {
   console.log('不是本包放的东西已原样保留，见上面的提示。')
 }
 if (cleared.status === 'other') {
-  console.log(`用户选的默认模式是 ${cleared.preset}，不是本模式，卸载安全。`)
+  console.log(`用户选的默认模式是 ${cleared.preset}，不是本包声明的模式，卸载安全。`)
 }
 
 if (CHECK_ONLY && pending) {
   console.log('有待清理的项目。去掉 --check 运行即可完成。')
   process.exitCode = 1
 } else {
-  console.log('就位。模式本身不需要清理：它是包里 patch 插入的一行声明，卸载包就没了。')
+  console.log('就位。两个模式本身不需要清理：它们由包内两层 patch 插入的声明行提供，卸载包就没了。')
   console.log('  dsh plugin --profile <name> remove dsh-story-mode')
 }
