@@ -1,66 +1,363 @@
-# dsh-story-mode bundle patch
+# dsh-story-mode bundle patch —— 面向 DSH 0.1.7-rc.1 及以后。
 #
-# 这个文件是 `dsh.bundle.patch` 层。装法：
+# 装法不变（一条命令，装完即可用，卸载即拔）：
 #
 #   dsh plugin --profile <name> add github:Furry-wucheng/dsh-story-mode
 #
 # `dsh plugin` 把包装进 profile 的 node_modules 并加进 `dsh.profile.bundles`；
-# profile 启动时合并本层。**不需要任何后续命令。**
+# profile 启动时把本文件作为一层 patch 合并。**不需要任何后续命令。**
 #
 # ── 这个 patch 做什么 ───────────────────────────────────────────────────────
 #
-# 本包的模式住在包里（`presets/short-story/`）。DSH 的 roster 只从固定的文件
-# 系统根发现预设，所以这里给 roster 追加一个指向本包 `presets/` 的根。
+# 它**插入一行 preset 声明**：`preset-short-story`（插件 `@deepseek-ai/dsh-agent-preset`），
+# 模式的全部子插件就写在那一行的 `config.plugins` 里。模式与它自带的两份技能都跟着
+# 包走：patch 来自包，技能由 `customSkillDirs` 从包内挂载。卸载包 = 这一层消失 =
+# 模式消失，不会在你家里留下任何副本。
 #
-# 难点是「包被装到哪」在发布时不可能知道。解法：在 `!!js` 里用 `createRequire`
-# 在**运行时**问出来。社区插件（dsh-TUI）用的也是这一招。
+# ── 0.1.7 改掉了什么（v1.1.4 及以前为什么整段失效）─────────────────────────
 #
-# ── 为什么是覆写 `agent-presets` 行，而不是插入自己的行 ─────────────────────
+# 旧版 DSH 的 roster 是 `@deepseek-ai/dsh-agent-presets`：它按 `roots` 扫描文件系统，
+# 每个根下 `<id>/agent.cordis.yml` 就是一个预设。本包因此只做一件事——按 id 覆写
+# 官方 `agent-presets` 行的 `config`，把包内 `presets/` 追加成一个根。
 #
-# 试过插入独立的行 + 自我退让（`disabled` 表达式），结论是不行：
-# `ctx.agentPresets` 只允许发布一次，所以两行不可能共存；而官方行几乎总是存在
-# （web-app bundle 提供它，标准 profile 都带），于是独立行永远退让、模式永远
-# 不出现。注入根就必须接管那一行。
+# 0.1.7 把这一行整个换掉了：
+#   * `@deepseek-ai/dsh-agent-presets` 不再随发行版出货，取而代之的是
+#     `@deepseek-ai/dsh-agent-preset-registry`（服务 `ctx.agentPresets`）+
+#     `@deepseek-ai/dsh-agent-preset`（一行 = 一个预设声明）；
+#   * **注册表不扫描目录，也不接受预设路径**。预设就是普通的 loader 行，它的
+#     `config.plugins` 是子插件列表；官方原话：新建或覆盖预设都是 bundle 补丁，
+#     插一行 `@deepseek-ai/dsh-agent-preset`。
+#   * 于是旧的 `- id: agent-presets` 补丁**再也匹配不到任何行**：启动器只会在
+#     stderr 留一句 "patch insert: entry not found" 之类的警告，模式静默消失，
+#     工具也不再注册——这正是升级到 0.1.7 之后"完全没法用"的原因。
 #
-# 桌面宿主对同一行也压了一层（`prepareDesktopProfile`）：它读回**合成后**的行
-# config，写成 `{ ...config, roots: [<dsh-agent-presets 包>/presets(trust system),
-# <DSH_HOME>/.agent-presets(trust user)], includeUserRoot: false }`；这一层在
-# bundle 层**之后**应用，也就是本包这一层之后。
+# 所以本文件从"覆写官方的 roster 行"改成"插入自己的 preset 声明行"。好处不只是
+# 能用了：`ctx.agentPresets.register()` 是**多发布**接口，本包不再需要和官方抢
+# 同一行，也就没有了旧版"必须整体重述 config、官方加字段就被静默抹掉"的代价。
 #
-# ── 那本包为什么还赢：`!!js` 标记会吞掉整份 config ──────────────────────────
+# ── 三条硬约束（都是 loader 源码里读出来的，改这个文件前先读）───────────────
 #
-# 因为下面的 `config` 是**一个** `!!js` 表达式：patch 落地后它是标记对象
-# `{ __jsExpr: '…' }`。桌面那层 `{ ...config, roots, includeUserRoot }` 展开时
-# 会把 `__jsExpr` 一起带上，于是最终 config 里**同时**有 `__jsExpr` 和
-# `roots` / `includeUserRoot`。
+#   1. **行的 `name` 永远不会被插值。** loader 只对 `config` 调 `interpolate()`
+#      （`disabled` 单独走 `disabledOf`），`name` 直接丢给 `EntryTree.import()`。
+#      所以子插件的 `name: !!js …` 会变成对象、整行报错。能跑的写法只有两种：
+#      包标识符，或**插在 `insert` 里的**绝对路径 / `./`、`../`（启动器会把它们
+#      转成相对 patch 文件的 file URL；`config.plugins` 里的名字不享受这个待遇）。
+#   2. **子行的解析基准是 profile 目录，不是包目录。** 预设树由
+#      `mountPreset(scope.ctx.extend({ baseUrl: record.context.baseUrl }))` 建出来，
+#      而声明行的 ctx 基准就是 profile 树自己的基准（`<profile>/`）。所以：
+#        · 本包自己的插件行写**裸包名** `dsh-story-mode`——profile 的 `node_modules`
+#          里就是它（社区插件 `dshmarket`、`dsh-better-sidebar` 用的正是这条路，
+#          在同一个 profile 里实测可加载）；
+#        · 但**相对路径不能写**：`./lib/index.js` 会按 profile 目录解析；`!!js`
+#          里的 `baseUrl` 也**不再是组合文件所在目录**，而是 profile 目录。
+#   3. **包内路径一律用 `createRequire(baseUrl)` 在运行时问出来**，见下面每个
+#      `!!js`：`createRequire(baseUrl).resolve('dsh-story-mode/package.json')` 拿到
+#      包根，再 `path.join` 出具体文件。baseUrl 以 `/` 结尾，所以 createRequire
+#      把 profile 目录当目录解析（少了尾斜杠 Node 会当成文件，直接 MODULE_NOT_FOUND）。
+#      包的安装位置在发布时不可能知道，只有运行时问得出来。
 #
-# Loader 求值时 `interpolate()` **先看整体**：
-#   isJsExpr(v) === v instanceof Object && '__jsExpr' in v
-# 命中就 `evaluate(v.__jsExpr)` 并**整体返回结果**——后加的那些键（桌面的
-# `roots`、`includeUserRoot: false`）随之被丢弃。所以并不是"`roots` 增量合并
-# 失败"，而是桌面那一层的键被本包的表达式整个吞掉。
+#   另外一个 YAML 侧的坑必须写在最显眼处：`!!js` 值用**双引号标量**时，YAML 会先
+#   处理转义——`'\n'` 在 loader 拿到之前就已经变成真换行，JS 源码里出现跨行字符串
+#   字面量 → `SyntaxError`，表现为 `mount` 时抛错、整个模式挂不上，而文件形状完全
+#   合法、roster 里也看不出问题（v1.1.3 正是栽在这里）。需要换行的地方只写
+#   `String.fromCharCode(10)`。`scripts/verify-composition.mjs` 会用同一套方言交叉
+#   验证每个 `!!js`，这类错误不会再漏过。
 #
-# **这条很脆，改之前必须先读上面这段。** 让本包在桌面部署上出现的唯一原因就是
-# "整份 config 是一个 `!!js` 表达式"。哪天把它改成"普通映射 + 内层 `!!js` 算
-# 路径"，桌面那层就会反过来盖掉 `roots`，模式会**静默消失**（不报错、不警告）。
+# ── 注意：这一行可以被用户 patch 覆盖 ───────────────────────────────────────
 #
-# **代价必须写在这里**：补丁按 id 覆盖 `config`（`target[key] = value`），所以
-# 下面把四个字段全部重述了一遍。将来官方给这一行加新字段，本包会静默把它抹掉
-# ——升级 DSH 之后请对照 `dsh --profile <name> --dump-default-config` 检查。
-# `story_doctor` 也会对照检查这一点。
-#
-# shipped 预设不受影响——它们由 `includeShippedRoot` 带进来，不占 `roots`。
-#
-# ── 写下面那段代码前必须知道的三件事（都是实测踩出来的）─────────────────────
-#
-#   1. `!!js` 后面用折叠标量 `>-`，整段代码会被压成**一行**。所以下面的
-#      JavaScript 写成**单行、语句间全带分号**的形式：
-#        · 不能有 `//` 行注释——一个就够把后面全部注释掉；
-#        · 不能靠自动分号插入——`const a = 1` 紧跟 `const b = 2` 会是语法错误。
-#   2. `createRequire` 的锚点必须按**文件 URL** 给。给它一个不带尾斜杠的目录
-#      路径，Node 会把该目录当成文件解析，直接 MODULE_NOT_FOUND。
-#   3. 只用求值环境给的两个东西：`ctx.baseUrl` 与 process 全局。
+# 声明行是普通条目，所以 profile 的 `cordis.patch.yml`（以及 Web 配置编辑器保存的
+# 修改）可以按 id `preset-short-story` 覆写它的 `config`——而 `config` 是**整体替换**、
+# 不是深合并。你自己改过这个模式的话，升级包**不会**覆盖你的改动；想拿回包里的版本，
+# 删掉 profile patch 里那一段再重启。`story_doctor` 会检查这一点。
 
-- id: agent-presets
-  config: !!js >-
-    (() => { const req = process.getBuiltinModule('node:module').createRequire(new URL('package.json', ctx.baseUrl)); const path = process.getBuiltinModule('node:path'); const fs = process.getBuiltinModule('node:fs'); const base = { default: 'standard', includeShippedRoot: true, includeUserRoot: true }; try { const root = path.dirname(req.resolve('dsh-story-mode/package.json')); const presetRoot = path.join(root, 'presets'); if (fs.existsSync(presetRoot)) { return { ...base, roots: [{ path: presetRoot, trust: 'user' }] }; } } catch {} return base; })()
+- insert:
+    - id: preset-short-story
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: short-story
+        name: 短篇小说模式
+        description: 小说创作与改稿：先读共用流程与审读面板，确认方向和字数，准备人物卡与节拍，确认方案后成稿。五个角色化只读审读员按触发条件派发（B1 冷读、B2 故事逻辑、B3 阅读体验、B4 文风执行、B5 动作与空间连续性）；完整故事与片段共用流程，仅缩小规划和审读范围；工具负责计数与定位。
+        # 官方预设占 1–4（standard / ptc / minimal / cordis），本模式排在它们后面。
+        order: 5
+        plugins:
+          # ── 身份 ────────────────────────────────────────────────────────────
+          #
+          # persona 只放**每轮常驻**的东西：身份、交付物、工作区边界、文风优先级。
+          # 流程规则住在技能与参考文件里——同一件事写两处，就会各说一套。
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              suffix: 你的工作目录是 {{cwd}}。
+              prefix: |-
+                你是一位短篇小说作者，擅长细腻的情感描写、人物的内心世界与微妙的人际关系。你由 {{model}} 驱动，运行在 DeepSeek Harness 上。
+
+                进入这个模式意味着你不再是编码 agent：这里没有构建、测试或类型检查，唯一的读者是人。所以你的交付物是**磁盘上的稿件文件**，不是聊天里的回复。正文一律先落盘，再用一两句话向作者汇报你做了什么、以及哪里你拿不准。
+
+                **这是写作工作区，不是你的个人项目。** 只读、只改写作者让你改的文件。不要顺手创建 README、说明文档、目录索引、总结文件或任何作者没要的文件；不要重命名、移动或删除既有文件。需要新增文件时，先说明为什么需要。
+
+                写任何正文或改稿之前，先加载 `short-story` 技能，再用文件读取工具完整读取它的 `references/writing-workflow.md` 与 `references/review-panel.md`——完整故事与片段都要读，加载技能不等于读过参考文件。工序列在共用写作流程里，审读规则和角色触发条件列在面板里，两边都以那里的文本为准，不靠记忆执行。动笔前还要加载 `writing-style-contract`。
+
+                审读角色池有五个，触发条件见面板的角色表：B1 冷读与最终盲读、B2 故事逻辑、B3 阅读体验、B4 文风执行、B5 动作与空间连续性。它们各自有专用工具（名字以 `subagent_review_` 开头），persona 与只读限制已经装在角色身上，**派发时只给变量**：正文路径、版本、范围与停止位置、必要的改动清单。不要传 `run_in_background: false`（前台调用拿不到可复用的 childId）。改稿复核用 `send_message` 发回同一位读者；只有最终盲读换一位全新读者。详情与材料边界见面板。
+
+                **若你是被委派的审读员：只执行派发任务。** 不需要读技能、不必读写作流程；只读派发消息列出的材料，不改文件，不再委派。
+
+                你的文风偏好排在作者之后：作者在接稿时或当场给出的语气、视角、禁忌，优先于技能里的默认风格。
+
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 32768
+
+          # ── 文件读写 ────────────────────────────────────────────────────────
+          #
+          # read / write / edit 套件。注册进宿主 tools 注册表，本身不发布服务，
+          # 因此不需要 realm；`fs` 服务与其策略留在宿主组成里。
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+
+          # ── 找文件与找文本 ──────────────────────────────────────────────────
+          #
+          # glob / grep。写作模式砍掉了 shell，但没有"搜"这件事撑着，改稿会退化成
+          # 通读：系列连载里"上一章那把伞在第几场出现过""这个名字有没有写错"是很常见
+          # 的问题，而这些只能靠搜，不能靠读。
+          #
+          # `sampleOverCapGlobResults` 是这一行的必填项（schema 要求），漏了它整行
+          # config 无效、模式挂不上。
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+
+          # ── 面向长正文的精确编辑器 ──────────────────────────────────────────
+          #
+          # `str_replace_editor` 对散文比 `edit` 更合适：view 返回带行号正文，
+          # str_replace 要求唯一字面量匹配（拒绝 0 处或多处命中，因此不会误改），
+          # insert 按边界插行。改稿时这是主要工具。
+          - id: tool-str-replace-editor
+            name: '@deepseek-ai/dsh-tool-str-replace-editor'
+            config:
+              maxOutputChars: 24000
+
+          # ── 结构与一致性检查（本包自带）────────────────────────────────────
+          #
+          # story_wordcount / story_lint / story_bible / story_doctor。
+          # 代码提供计数、字段检查与字面定位；专名一致性、人物与视角由审读员
+          # 结合上下文核对。
+          #
+          # 名字写**裸包名**：子行的解析基准是 profile 目录（见文件头第 2 条），
+          # 而本包就装在 profile 的 node_modules 下。裸包名比相对路径稳——
+          # 它不依赖"这个包的 patch 文件放在哪一层目录"。
+          #
+          # 这一行还有一个前提：**插件零运行时依赖**。本包不 import 任何
+          # `@deepseek-ai/*` 包（连 schemastery 都没有），所以任何布局下都能加载。
+          # 改动时不要引入裸导入：ESM 的解析基准是加载入口的父路径，一旦 import
+          # harness 的包，就必须自带 node_modules。
+          #
+          # 解析不到时整行失败 → 整个 preset 变成 broken 行。这是想要的行为：
+          # 宁可 roster 报错，也不要一个工具悄悄消失的模式。`story_doctor` 可自检。
+          - id: story-tools
+            name: dsh-story-mode
+            config:
+              # 传 sceneTargets 时，相对每场目标字数偏离多少百分比才提示。
+              sceneDriftPercent: 15
+              # 同一个双字词在**一段**叙述里出现几次算过度重复（按段计，不是全文累计——
+              # 全文口径会把"自己/什么/一个"这类常用词全报出来）。
+              repeatThreshold: 3
+
+          # ── 技能 ────────────────────────────────────────────────────────────
+          #
+          # 技能注册表在宿主组成里并按 scope 分层：这一行注册进本 preset 的那一层。
+          # 技能根是包内的 `skills/`，里面两份技能：
+          #   `short-story/`             模式内的写作流程技能
+          #   `writing-style-contract/`  文风契约
+          #
+          # 文风契约**只**从这里挂载：它不该出现在别的模式里。
+          # `<DSH_HOME>/skills` 是用户根（skill-filesystem 里 rank 400 的 `user-dsh`），
+          # 而每个 preset 自己挂的 skill-filesystem 实例都会扫它（`includeDefaultRoots`
+          # 默认 true）——往那儿放一份，等于让文风契约出现在所有模式里，包括编码会话。
+          # 本包因此不安装任何用户根副本；注册进本 preset 这一层才是正确的作用域。
+          #
+          # 为什么必须显式挂：persona 与 short-story 技能都要求动笔前读它，缺了这一行，
+          # 模型第一次 `skill` 调用就会得到 `unknown or no longer available`，再花一整轮
+          # 去翻文件系统找一个根本不存在的路径。`story_doctor` 会检查这一行在不在。
+          #
+          # 路径为什么长这样：`!!js` 在**这个子插件加载时**求值，`baseUrl` 是 profile
+          # 目录，所以先 `createRequire(baseUrl).resolve('dsh-story-mode/package.json')`
+          # 问出包根，再拼 `skills/`。这是官方组合（`dsh-web-app` 的 cordis 预设）
+          # 用的同一个写法。
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+            config:
+              customSkillDirs:
+                - !!js "process.getBuiltinModule('node:path').join(process.getBuiltinModule('node:path').dirname(process.getBuiltinModule('node:module').createRequire(baseUrl).resolve('dsh-story-mode/package.json')), 'skills')"
+
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          # ── 上下文压缩 ──────────────────────────────────────────────────────
+          #
+          # 一部中短篇正文加设定很容易把上下文吃满。`compaction-basic` 读
+          # `toolResultPrune`（用 ctx.get），所以裁剪器必须与它共享 realm。
+          # tokenMeter 刻意不放进这个 realm：它属于宿主，浏览器读的上下文计量单位挂在它上面。
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+
+              # 人类侧的 /compact。中短篇写到大半时上下文会满，自动压缩的时机未必是作者
+              # 想要的时机——能在场景之间手动压一次，比被迫在半句话里被折掉好。
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+
+          # ── 委派：五个角色化的审读员 + 一个通用子代理 ───────────────────────
+          #
+          # `subagents` 注册表与 spawn 后端在宿主组成里，这里只贡献工具行。
+          # 写作模式不需要工作流、Ralph 循环或多级委派——那些是编码模式的重武器。
+          #
+          # **为什么每个角色一行**：五个审读角色的固定部分（身份、读什么、不读什么、
+          # 报告格式、字数上限）各自住在一个 `skills/short-story/references/reviewers/*.md`
+          # 里，由下面每行的 `persona` 在挂载时读出来装到**那个角色**身上。于是：
+          #   * 主代理派发时只给变量，不再从面板里抄一遍模板——抄一次就可能漏一条信息边界；
+          #   * 主代理不必为"派谁"先吃下 18 KB 模板正文；
+          #   * 每个孩子只装自己那一段，不再连主代理的 5.9 KB 人设一起收到。
+          #
+          # **`toolFilter` 是硬限制，不是提示词礼貌用语**：`spawn` provider 在孩子的
+          # 创建窗口里调用 `childCtx.tools.restrict(...)`，所以审读员**物理上**没有写文件、
+          # 编辑、呈现和再委派的能力。注意 `restrict()` 对未知工具名**抛错**，而它抛在
+          # 孩子创建窗口里＝那次派发直接失败，所以 `allow` 只列本组合真实注册过的名字：
+          # read / write / edit / read_image / str_replace_editor / glob / grep 来自上面
+          # 三行工具行，skill 来自 tool-skill 行。
+          # 故意**不**允许 `skill`：B4 需要的文风契约已经拼进它自己的 persona，其余角色不读技能。
+          #
+          # **`persona` 用 `!!js` 从包内文件读**：表达式在挂载时求值，路径由
+          # `createRequire(baseUrl)` 从 profile 目录解析出包根（见文件头）。文件缺失会让
+          # 这一行 config 无效、整个 preset 挂不上——宁可报错，也不要一个悄悄没有信息
+          # 边界的审读员。`story_doctor` 检查这些文件在不在。
+          #
+          # **为什么是 `continuable` 而不是 `one-shot`**：一次性子代理是"派一次、从头读
+          # 一遍全文、报完就没了"。改稿后想复核，只能再派一位全新的读者，把同一篇正文
+          # 再从头读一遍——审读轮次越多越慢，而且每次都是冷前缀。可复用模式调用
+          # `subagents.startContinuable()`，返回一个持久 childId；改稿后的复核用
+          # `send_message` 发回**同一个** childId，它带着上一版的阅读和自己写过的报告
+          # 继续（前缀命中缓存），不必重读全文，只回答问题即可。
+          #
+          # **一个必须知道的坑**：可复用模式下，只有**后台**调用才产生持久 child。
+          # 源码里前台分支（`run_in_background: false`）走的是一次性启动，拿不到
+          # childId，也收不了后续消息。所以技能与审读面板都明令派审读员时不要传
+          # `run_in_background: false`：要等报告就等结算通知，不要前台等。
+          #
+          # **为什么不开 fork**：fork 继承主代理的全部上下文——大纲、写作推理、作者
+          # 要求、之前的修改理由。读者一旦看过作者的底牌，报出来的"我没看懂"就不再是
+          # 读者证据。本模式刻意不挂 `subagent_fork`，也刻意不开 `modelSelectionSettings`：
+          # 审读员与主代理同路由，判断不会因为换了模型而漂移。
+          #
+          # `send_message` / `interrupt_agent` 与 `list_agents` 由 control 包提供，它们是
+          # 宿主 `subagents` 服务之上的模型侧适配器，不发布服务，所以放在这里不需要 realm。
+          - id: tool-subagent
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent
+              backgroundMode: continuable
+
+          # B4 的 persona = 角色说明 + 文风契约全文。契约必须**拼在角色说明后面**：
+          # 契约的使用说明要求"先读作者要求、再完整读正文、最后对照契约"，而 persona
+          # 在 system prompt 里位于最前，正文才是用户消息——顺序天然正确。
+          #
+          # **换行符必须写成 `String.fromCharCode(10)`，不能写 `'\n'`**（理由见文件头：
+          # 双引号标量里的 `\n` 会被 YAML 先变成真换行）。
+          - id: tool-subagent-review-b1
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent_review_b1
+              backgroundMode: continuable
+              toolFilter:
+                allow: [read, read_image, str_replace_editor, glob, grep]
+                deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+              persona: !!js "(() => { const m = process.getBuiltinModule('node:module'); const p = process.getBuiltinModule('node:path'); const f = process.getBuiltinModule('node:fs'); const root = p.dirname(m.createRequire(baseUrl).resolve('dsh-story-mode/package.json')); return f.readFileSync(p.join(root, 'skills/short-story/references/reviewers/b1-cold-read.md'), 'utf8'); })()"
+
+          - id: tool-subagent-review-b2
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent_review_b2
+              backgroundMode: continuable
+              toolFilter:
+                allow: [read, read_image, str_replace_editor, glob, grep]
+                deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+              persona: !!js "(() => { const m = process.getBuiltinModule('node:module'); const p = process.getBuiltinModule('node:path'); const f = process.getBuiltinModule('node:fs'); const root = p.dirname(m.createRequire(baseUrl).resolve('dsh-story-mode/package.json')); return f.readFileSync(p.join(root, 'skills/short-story/references/reviewers/b2-story-logic.md'), 'utf8'); })()"
+
+          - id: tool-subagent-review-b3
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent_review_b3
+              backgroundMode: continuable
+              toolFilter:
+                allow: [read, read_image, str_replace_editor, glob, grep]
+                deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+              persona: !!js "(() => { const m = process.getBuiltinModule('node:module'); const p = process.getBuiltinModule('node:path'); const f = process.getBuiltinModule('node:fs'); const root = p.dirname(m.createRequire(baseUrl).resolve('dsh-story-mode/package.json')); return f.readFileSync(p.join(root, 'skills/short-story/references/reviewers/b3-reading-experience.md'), 'utf8'); })()"
+
+          - id: tool-subagent-review-b4
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent_review_b4
+              backgroundMode: continuable
+              toolFilter:
+                allow: [read, read_image, str_replace_editor, glob, grep]
+                deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+              persona: !!js "(() => { const m = process.getBuiltinModule('node:module'); const p = process.getBuiltinModule('node:path'); const f = process.getBuiltinModule('node:fs'); const root = p.dirname(m.createRequire(baseUrl).resolve('dsh-story-mode/package.json')); const role = f.readFileSync(p.join(root, 'skills/short-story/references/reviewers/b4-style-execution.md'), 'utf8'); const contract = f.readFileSync(p.join(root, 'skills/writing-style-contract/SKILL.md'), 'utf8'); return role + String.fromCharCode(10) + contract; })()"
+
+          - id: tool-subagent-review-b5
+            name: '@deepseek-ai/dsh-tool-subagent'
+            config:
+              provider: spawn
+              toolName: subagent_review_b5
+              backgroundMode: continuable
+              toolFilter:
+                allow: [read, read_image, str_replace_editor, glob, grep]
+                deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
+              persona: !!js "(() => { const m = process.getBuiltinModule('node:module'); const p = process.getBuiltinModule('node:path'); const f = process.getBuiltinModule('node:fs'); const root = p.dirname(m.createRequire(baseUrl).resolve('dsh-story-mode/package.json')); return f.readFileSync(p.join(root, 'skills/short-story/references/reviewers/b5-physical-continuity.md'), 'utf8'); })()"
+
+          - id: tool-subagent-control
+            name: '@deepseek-ai/dsh-tool-subagent-control'
+
+          - id: tool-subagent-list-agents
+            name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+          # ── 其余面向模型的工具 ──────────────────────────────────────────────
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+
+          # 长程写作目标（"把这部长篇写完"）与跨回合推进。
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+
+          # `web` 服务与搜索提供方留在宿主；这里只有面向模型的工具。
+          # 写实题材要查证细节时用。
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+
+          # 稿件作为交付物呈现给作者。
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'

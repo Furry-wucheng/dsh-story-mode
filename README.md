@@ -34,9 +34,14 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 
 ### 它是怎么做到的
 
-模式**住在包里**（`presets/short-story/`）。包的 `cordis.patch.yml` 在 profile 合成配置时被合并，其中用 `createRequire(ctx.baseUrl)` 在**运行时**问出本包装在哪，然后接管 `agent-presets` 那一行、把包内 `presets/` 声明为 roster 的一个根。
+模式是包内 `cordis.patch.yml` **插入的一行 preset 声明**（插件 `@deepseek-ai/dsh-agent-preset`）。DSH 0.1.7 起 agent preset 不再是"扫描某个目录里的 `agent.cordis.yml`"，而是普通的 loader 行：注册表**既不扫描目录，也不接受预设路径**，新建或覆盖预设都靠 bundle 补丁插一行。那一行的 `config.plugins` 就是模式的全部子插件（人设、文件工具、精确编辑器、写作工具、技能、压缩、委派），`config.name` / `config.description` 是模式选择器里显示的文本。
 
-「包被装到哪」在发布时不可能知道，所以路径必须运行时算——这也是社区插件（如 dsh-TUI）解决同一个问题的做法。
+于是没有任何"复制到 home"的步骤：patch 跟着包走，两份技能由同一行用 `customSkillDirs` 从**包内** `skills/` 挂载。包内文件路径一律运行时算出——这也是社区插件（如 dsh-TUI）解决同一个问题的做法。
+
+**两条与 0.1.7 前相反的解析规则**（改这个文件前必须知道）：
+
+- **子插件行的名字写裸包名 `dsh-story-mode`。** preset 子插件的解析基准是 **profile 目录**，不是 patch 文件所在目录、也不是包目录；profile 的 `node_modules` 里就是本包（社区插件 `dshmarket`、`dsh-better-sidebar` 用的是同一条路）。相对路径 `./lib/index.js` 会按 profile 目录解析而找不到；`name: !!js …` 更不行——loader 只对 `config` 插值，`name` 会原样丢给 `import()`。
+- **包内文件路径在运行时问出来。** `!!js` 里的 `baseUrl` 现在是 profile 目录（解析锚点），不再是组合文件所在目录，所以每个读文件的行都先用 `createRequire(baseUrl).resolve('dsh-story-mode/package.json')` 拿到包根，再 `path.join`。官方组合（`dsh-web-app` 的 cordis 预设）用的也是这个写法。
 
 ### 卸载
 
@@ -44,7 +49,7 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 dsh plugin --profile <你的 profile> remove dsh-story-mode
 ```
 
-**模式与它自带的两份技能都跟着包一起走**，这两样不需要任何清理——它们从来没被复制到你家里去过。（模式住在包的 `presets/short-story/`，技能是 preset 用 `customSkillDirs` 从包内挂上去的，所以文风契约只在这个模式里可见。）
+**模式与它自带的两份技能都跟着包一起走**，这两样不需要任何清理——它们从来没被复制到你家里去过。（模式是包内 patch 插入的声明行，技能由 `customSkillDirs` 从包内挂载，所以两份技能只在这个模式里可见。）
 
 只有一件事要在卸载前确认：
 
@@ -52,31 +57,25 @@ dsh plugin --profile <你的 profile> remove dsh-story-mode
 dsh plugin --profile <你的 profile> exec dsh-story-mode check
 ```
 
-如果它提示「默认预设指向本模式」，先清理再卸载：
+如果它提示「默认模式指向本模式」，先清理再卸载：
 
 ```sh
 dsh plugin --profile <你的 profile> exec dsh-story-mode cleanup
 ```
 
-为什么要跑：如果你在设置里把「短篇小说模式」设成了**默认模式**，卸载包之后新建会话会直接以 `agent-preset/not-found` 失败——DSH 找不到默认 preset 时不会回退到 `standard`，而真正会顺手清掉这个默认值的那条路径被 `dsh plugin remove` 绕过了。这一步必须在卸载**之前**做，因为包一旦 remove，这个命令也就没了。
+为什么要跑：如果你在模式选择器里把「短篇小说模式」设成了**默认模式**，卸载包之后新建会话会直接以 `agent-preset/not-found` 失败——DSH 找不到默认 preset 时不会回退到 `standard`，而真正会顺手清掉这个默认值的那条路径被 `dsh plugin remove` 绕过了。这一步必须在卸载**之前**做，因为包一旦 remove，这个命令也就没了。
 
-（`cleanup` 顺带清掉两处历史残留：v1.0.1 复制到 `<DSH_HOME>/.agent-presets/short-story` 的模式副本，以及 v1.0.1／v1.0.2 曾可选安装的 `<DSH_HOME>/skills/writing-style-contract` 副本——后者只在带 `.dsh-story-mode.json` 归属标记时才删，绝不会误伤你自己手写的同名技能。不是本包放的东西一律不动。）
+（0.1.7 起这个默认值存在 `agent-preset-registry` 行的 volatile 字段 `selectedDefault` 上，由 loader 写回 profile 的 `cordis.patch.yml`；`cleanup` 只删那一行，不动文件里的其他内容。它顺带清掉两处历史残留：v1.0.1 复制到 `<DSH_HOME>/.agent-presets/short-story` 的模式副本，以及 v1.0.1／v1.0.2 曾可选安装的 `<DSH_HOME>/skills/writing-style-contract` 副本——后者只在带 `.dsh-story-mode.json` 归属标记时才删，绝不会误伤你自己手写的同名技能。不是本包放的东西一律不动。）
 
-### 一条命令的边界：它接管了官方那一行
+### 一条命令的边界
 
-`ctx.agentPresets` 这个服务只允许发布一次，所以本包**不能**另插一行——那样会和官方行冲突，只能有一方生效。所以它覆写官方 `agent-presets` 行的 `config`，保留 `default: standard` 并把本包的 `presets/` 追加为根。
+`ctx.agentPresets.register()` 是**多发布**接口，所以本包**不碰**任何官方行：它只插入自己的一行 `preset-short-story`（`order: 5`，排在官方 standard / ptc / minimal / cordis 之后）。0.1.7 以前那种"接管官方 `agent-presets` 行、整体重述它的 config"的代价（官方加字段就被静默抹掉）**已经不存在了**。
 
-**代价必须知道**：补丁按 id 覆盖 `config`。升级 DSH 之后，如果官方给这一行加了新字段，本包会静默抹掉它。对照检查：
+剩下一条要记住的：**声明行是普通条目，可以被用户 patch 覆盖。** profile 的 `cordis.patch.yml`（以及 Web 配置编辑器保存的修改）能按 id `preset-short-story` 覆写它的 `config`——而 `config` 是**整体替换**、不是深合并。所以你改过这个模式的话，升级包**不会**覆盖你的改动；想拿回包里的版本，删掉 profile patch 里那一段再重启。`story_doctor` 会检查这一点。
 
-```sh
-dsh --profile <你的 profile> --dump-default-config
-```
+### 需要什么版本
 
-**桌面版对同一行也压了一层，而且在本包之后**：它读回合成后的 config，写成 `roots = [<dsh-agent-presets 包>/presets(system), <DSH_HOME>/.agent-presets(user)]` 加 `includeUserRoot: false`。本包没被它盖掉，靠的是本包 `config` 是**一个** `!!js` 表达式——落地后它是 `{ __jsExpr: … }` 标记，桌面那层展开会把这个标记一起带上，而 Loader 的 `interpolate()` 先看整体：`isJsExpr` 命中就整体求值返回，后加的 `roots` 被丢弃。
-
-**这不是“稳”，是“恰好”**：如果把这一行的 config 改成“普通映射 + 内层 `!!js` 算路径”，桌面那层就会反过来盖掉 `roots`，模式会**静默消失**且没有任何报错。改这一行前请先读 `cordis.patch.yml` 里的对应段落。
-
-`story_doctor` 会提示这项风险，但不执行官方配置比对或实际加载验证。将来若多个插件都需要追加根，这是框架层面的限制（`roots` 不是增量合并的）——届时该由 DSH 提供追加语义，而不是每个插件各自覆写。
+**DSH 0.1.7-rc.1 及以后。** 更早的 DSH 没有 `@deepseek-ai/dsh-agent-preset` 这个包，本包插入的声明行加载不到——模式不出现，启动日志里留下一条 import 失败。反过来，v1.1.4 及以前的包（覆写 `agent-presets` 行）在 0.1.7 上只会得到一句"patch 目标不存在"的警告，模式与四个工具一起消失。两条路不通用，请按 DSH 版本选包。
 
 ### 验证安装
 
@@ -86,7 +85,7 @@ dsh --profile <你的 profile> --dump-default-config
 dsh plugin --profile <你的 profile> exec dsh-story-mode check
 ```
 
-安装验证请在新会话里让 agent 调用 `story_doctor` —— 它会逐项报告：包是否进了 bundles、`package.json` 是否可解析（带 BOM 会让 DSH 读不出 `dsh.bundle`）、patch 是否接管了那一行、包内模式目录是否满足静态发现条件、文风契约是否已挂进 preset，以及卸载前需要注意的两处残留（默认预设 / 旧安装副本）。
+安装验证请在新会话里让 agent 调用 `story_doctor` —— 它会逐项报告：包是否进了 bundles、`package.json` 是否可解析（带 BOM 会让 DSH 读不出 `dsh.bundle`）、patch 是否插入了 `preset-short-story` 行、子插件行的写法能不能加载、包内模式文件与五个角色人设是否齐全、profile patch 有没有覆盖这一行；在写作模式里还会**问运行时本身**：roster 里有没有这个模式、组合是不是 `broken`、本作用域里是不是正好两份技能和四个 `story_*` 工具。
 
 ### 其他安装方式
 
@@ -94,10 +93,10 @@ dsh plugin --profile <你的 profile> exec dsh-story-mode check
 # 全局安装
 pnpm add -g github:Furry-wucheng/dsh-story-mode
 
-# 从源码目录直接开发（不装进 profile）
+# 从源码目录直接开发：打成 tgz 再装进 profile（link 安装也可以，见下面的开发验证）
 git clone https://github.com/Furry-wucheng/dsh-story-mode
 cd dsh-story-mode && pnpm pack        # 得到一个 tgz
-dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.1.2.tgz
+dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.2.0.tgz
 ```
 
 ### 升级
@@ -107,6 +106,8 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 ```
 
 模式与两份技能都跟着更新——它们都住在包里，没有任何需要手动刷新的副本。
+
+（唯一的例外：你在 profile 的 `cordis.patch.yml` 里按 id `preset-short-story` 改过这一行。patch 是整体替换 `config` 的，所以那一份以你的为准——升级不会覆盖它，也不会提醒你。`story_doctor` 会把这种情况报出来。）
 
 ## 用它
 
@@ -137,7 +138,7 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 | story_wordcount | 字数、按分隔符或标题分场、目标偏离、段落长度、引号内比例、引号外重复双字组合；不评价节奏好坏 |
 | story_lint | 引号外用词线索，带原文行号和版本；不判视角、时态、情绪冗余或“AI 文风”，也不要求按命中删改。**自查与定位用，不进审读流程** |
 | story_bible | 校验人物卡必填字段非空、姓名及别名字面提及、术语清单；不识别全部新人物或判断设定合理性 |
-| story_doctor | 静态安装自检与残留提示；不能代替 DSH 实际加载和子代理运行验证 |
+| story_doctor | 安装自检与残留提示：静态检查 patch 行与包内文件，在写作模式里还会读运行时 roster、把本作用域里的技能与四个工具列出来；不能代替真实会话与子代理运行验证 |
 
 ### 按大纲目标统计
 
@@ -216,9 +217,9 @@ B2 的必答项一共三组，第三组专治作者会读成“上帝视角”�
 
 **最终盲读使用全新读者，只看最新正文。** 旧问题是否解决由主代理在报告返回后对照。读者的困惑是需要核实的证据，也可能是合理悬念，不自动要求补背景。
 
-**审读员不改文件、不再委派，这是权限层的限制而不是提示词请求。** 每个角色由 preset 里独立的一行 `tool-subagent` 提供，带 `toolFilter`：只允许 `read` / `read_image` / `str_replace_editor` / `glob` / `grep`，`write` / `edit` 与全部委派工具都被 `tools.restrict()` 在这个子代理的 scope 上剥掉。角色的人设（身份、读什么、报告格式）同样固定在那一行里，由 `!!js` 从 `references/reviewers/*.md` 读出，所以派发时只给变量、不必重述边界。独立审读无法运行时如实说明，不虚报验收。
+**审读员不改文件、不再委派，这是权限层的限制而不是提示词请求。** 每个角色由 preset 里独立的一行 `tool-subagent` 提供，带 `toolFilter`：只允许 `read` / `read_image` / `str_replace_editor` / `glob` / `grep`，`write` / `edit` 与全部委派工具都被 `tools.restrict()` 在这个子代理的 scope 上剥掉。角色的人设（身份、读什么、报告格式）同样固定在那一行里，由 `!!js` 从 `skills/short-story/references/reviewers/*.md` 读出，所以派发时只给变量、不必重述边界。独立审读无法运行时如实说明，不虚报验收。
 
-写作入口要求主代理完整读取 references/writing-workflow.md（共用写作流程）和 references/review-panel.md（独立审读）；整篇与片段都必须读。两份资料位于 presets/short-story/skills/short-story/ 下，skill 调用不会自动加载它们，必须另用文件工具读取。
+写作入口要求主代理完整读取 references/writing-workflow.md（共用写作流程）和 references/review-panel.md（独立审读）；整篇与片段都必须读。两份资料位于包内的 skills/short-story/ 下，skill 调用不会自动加载它们，必须另用文件工具读取。
 
 ---
 
@@ -226,18 +227,22 @@ B2 的必答项一共三组，第三组专治作者会读成“上帝视角”�
 
 ```
 dsh-story-mode/
-  cordis.patch.yml                  接管 agent-presets 行，把包内 presets/ 声明为 roster 的根
-  presets/short-story/              模式本身：agent.cordis.yml + 元数据 + 写作流程技能
-    skills/short-story/             SKILL.md：必读入口、方向与字数确认、范围约束
-      references/                  writing-workflow.md：人物卡、节拍、成稿与修订；review-panel.md：派发规则与角色触发条件
-        reviewers/                 B1–B5 各自的固定人设（身份、读什么、报告格式），由审读员行读出
-  lib/index.js                      主入口：写作工具
+  cordis.patch.yml                  插入一行 preset 声明（@deepseek-ai/dsh-agent-preset），
+                                    模式的人设、工具、技能、压缩与委派全在那一行的 config.plugins 里
+  skills/short-story/               写作流程技能
+    SKILL.md                        必读入口、方向与字数确认、范围约束
+    references/                     writing-workflow.md：人物卡、节拍、成稿与修订；review-panel.md：派发规则与角色触发条件
+      reviewers/                    B1–B5 各自的固定人设（身份、读什么、报告格式），由审读员行读出
+  skills/writing-style-contract/    文风契约（由 preset 挂进模式，只在这个模式里可见）
+  lib/index.js                      主入口：四个写作工具
   lib/doctor.js                     独立入口 dsh-story-mode/doctor：只注册 story_doctor
   lib/tool-kit.js                   零依赖的工具构造器与参数校验（两个入口共用）
-  skills/writing-style-contract/    文风契约（由 preset 挂进模式，只在这个模式里可见）
   bin/cli.mjs                       check / cleanup（不安装任何东西，只做卸载前清理）
   scripts/cleanup.mjs               实际干活的那份
+  scripts/verify-composition.mjs    离线组合自检（见「开发验证」）
 ```
+
+**模式是那一行声明，不是目录。** 0.1.7 起预设不再从文件系统发现，所以包里没有 `presets/`：子插件行写在 `cordis.patch.yml` 里，行名用裸包名 `dsh-story-mode` 指回本包的 `lib/index.js`，两份技能由同一行的 `customSkillDirs` 指向包内 `skills/`。
 
 两个入口是 `exports` 子路径实现的同包多入口。`./doctor` 可以单独挂到**任何**模式里做诊断（例如创造模式），不必连带加载三个写作工具。
 
@@ -250,18 +255,17 @@ dsh-story-mode/
 - **审读员是 `continuable` 子代理，不是一次性调用。** 一次性模式（v1.1.0 及以前）下每轮复核都要再派一位读者，把同一篇正文重新从头读一遍；可复用模式下复核走 `send_message`，子代理带着上一版正文的阅读和自己的报告继续。**坑**：可复用模式里只有后台调用会产生持久 child，前台分支走的是 `subagents.start()`，拿不到 childId——所以技能与审读面板都明令派审读员时不要传 `run_in_background: false`。
 - **五个审读角色各自一行，人设与只读限制都在组合里。** 每个角色是一个独立的 `tool-subagent` 行（`subagent_review_b1` … `b5`）：`persona` 由 `!!js` 从 `references/reviewers/<角色>.md` 读出并装到那个孩子身上，`toolFilter.allow` 只列读类工具，`deny` 拿掉 `write` / `edit` / `present` / 全部委派工具。于是派发时主代理只给变量（路径、版本、范围、改动清单），不再从面板抄模板——抄一次就可能漏一条信息边界。**两个坑**：① `tools.restrict()` 对未知工具名**抛错**，而它抛在孩子的创建窗口里＝那次派发直接失败，所以名单里只能出现本组合真实注册过的工具名；② 审读员人设里**不要**给 `skill` 工具，B4 需要的文风契约在挂载时拼进它自己的 persona。
 - **写作模式故意不开 `subagent_fork`。** fork 继承主代理的全部上下文（大纲、写作推理、修改理由）；读者看过作者的底牌之后，“我没看懂”就不再是读者证据。审读员也因此不开子级模型选择，一律与主代理同路由。
-- **技能根由 preset 自己声明，所以文风契约只在这个模式里生效。** 写作流程技能与文风契约分别是包内的 `presets/short-story/skills/` 与 `skills/`，都以「preset 文件所在目录」为基准解析（`!!js` 里的 `baseUrl`），注册落进本 preset 那一层，所以模式、流程技能、文风契约三者永远同进同出。它**故意不**放进 `<DSH_HOME>/skills`：那是用户根（rank 400），而每个 preset 自己挂的 skill-filesystem 实例都会扫它（`includeDefaultRoots` 默认 true）——放进去等于让它出现在所有模式里，包括编码会话，而它只属于写作模式。
-- **写作模式保留了搜索工具（`glob` / `grep`）。** shell、计划模式、后台任务、工作流、多级委派都拆掉了，但“找”不能拆：系列连载里核对名字与细节靠搜，不靠通读。这一行要注意 `sampleOverCapGlobResults` 在 framework 侧是**必填**配置（`z.boolean().required()`），漏了它整个 preset 会挂不上。
-- **`ctx.agentPresets` 只允许发布一次**，所以一个插件**不能**只“追加自己的 roster 行”——官方行几乎总是存在（web-app bundle 提供它），两行不能共存。注入根就必须接管那一行，代价见上面「一条命令的边界」。
-- **`roots` 是整体替换而非增量合并。** 所以本包接管那一行时会把它自己的根写全；多个插件都要追加根时，这是框架层面的限制。
-- **根下的 `<id>` 条目必须是真实目录。** roster 的 `scanRoot` 用 `readdir().isDirectory()` 判定，**不跟随符号链接**。Windows 上 Node 把 junction 报成符号链接，于是链接形式的预设会被**静默跳过**，而 `stat()` 读文件却完全正常——本包早期版本正是栽在这里。（技能侧相反：`dsh-skill-filesystem` 会跟随链接一级。）
-- **`!!js` 后面是折叠标量，整段代码会压成一行。** 所以那段 JavaScript 里不能有 `//` 行注释（一个就吃掉后面全部），也不能靠自动分号插入。这两条都是实测踩出来的。
-- **`createRequire` 的锚点必须按文件 URL 给。** 给它一个不带尾斜杠的目录路径，Node 会把该目录当成文件解析，直接 MODULE_NOT_FOUND。
-- **`package.json` 不能有 BOM。** 带 BOM 会让 `JSON.parse` 失败，DSH 因此读不出 `dsh.bundle` 声明，`dsh plugin add` 不会把包加进 profile 的 bundles，patch 永远不生效——表现为“装好了但模式不出现”。这个坑本包也踩过一次，`story_doctor` 里有常驻检查（`package.json 无 BOM` 那一项）。
-- **preset 行不能用 `!!js` 动态算路径。** 发现阶段确实支持 `!!js`，但紧随其后的形状检查要求每行的 `name` 是**字符串**；`!!js` 解析出来是对象，整份组成会被判为 broken。
-- **preset 行不能用裸包名**（从 harness 解析，到不了用户目录），所以组成里用相对引用 `../../lib/index.js`——以组合文件所在目录为基准，因此**没有任何机器相关的绝对路径**。
-- **升级包之后要确认模式真的换了。** 模式住在包里、由 profile 的 patch 声明成 roster 的根，所以你改的是**哪一份包**决定模式的行为：从 GitHub 装的（`dsh plugin --profile <name> add github:<作者>/dsh-story-mode`）取的是远端默认分支，本地改动没推上去就不会生效。更隐蔽的一种：早期版本或插件市场留下过一份 profile 里的包快照，`dsh plugin remove` 之后**不会**自动删掉它——它可能还留在 `node_modules` 与插件目录里，于是“装了新版但模式没变”。判断办法是看模式里有没有 `subagent_review_b1` 这个工具；清理由市场或手动删除那份快照完成（本包的 `cleanup` 脚本只处理 home 下的技能副本与旧预设副本）。
-- **本包零运行时依赖**（连 `schemastery` 都没有）。ESM 的解析基准是加载入口的父路径，所以插件若 `import` 任何 `@deepseek-ai/*` 包就必须自带 `node_modules`；它什么都不 import，于是任何布局下都能加载。**改代码时不要引入裸导入**，否则上面那条相对引用会失效。
+- **技能根由 preset 声明，所以两份技能只在这个模式里生效。** 它们都是包内 `skills/` 下的技能，路径由那一行的 `customSkillDirs` 在运行时从包内算出来，注册落进本 preset 那一层，所以模式与技能永远同进同出。它们**故意不**放进 `<DSH_HOME>/skills`：那是用户根（rank 400），而每个 preset 自己挂的 skill-filesystem 实例都会扫它（`includeDefaultRoots` 默认 true）——放进去等于让它们出现在所有模式里，包括编码会话，而它们只属于写作模式。
+- **写作模式保留了搜索工具（`glob` / `grep`）。** shell、计划模式、后台任务、工作流、多级委派都拆掉了，但"找"不能拆：系列连载里核对名字与细节靠搜，不靠通读。这一行要注意 `sampleOverCapGlobResults` 在 framework 侧是**必填**配置（`z.boolean().required()`），漏了它整个 preset 会挂不上。
+- **preset 是普通 loader 行，注册表不扫描目录。** `@deepseek-ai/dsh-agent-preset` 的一行 = 一个预设：`config.id` 是会话保存的标识符，`config.plugins` 是子插件列表。插入用 bundle patch 的 `insert` 层，不碰官方任何一行。**坑**：子行的 `name` 必须是字符串，且解析基准是 **profile 目录**——所以本包自己的行写裸包名，包内文件路径一律用 `createRequire(baseUrl)` 在运行时问出来（`baseUrl` 是解析锚点，不是路径基准）。
+- **`insert` 里的相对路径会被启动器改写，`config.plugins` 里的不会。** 启动器只把 `insert` 条目（及其嵌套分组）中形如 `/绝对路径`、`./`、`../` 的**行名**转成相对 patch 文件的 file URL；子插件行的名字不在这个改写范围内。这就是为什么本包用裸包名，而不是 `./lib/index.js`。
+- **`!!js` 后面若是折叠标量，整段代码会压成一行。** 所以那段 JavaScript 里不能有 `//` 行注释（一个就吃掉后面全部），也不能靠自动分号插入。这两条都是实测踩出来的（本包现在把这类表达式写成单行双引号标量）。
+- **双引号 `!!js` 里不要出现反斜杠转义。** YAML 先处理转义，`'\n'` 会变成真换行、JS 源码跨行；需要换行写 `String.fromCharCode(10)`。`story_doctor` 与 `npm run verify` 都有针对这一条的检查。
+- **`createRequire` 的锚点必须按文件 URL 给。** 给它一个不带尾斜杠的目录路径，Node 会把该目录当成文件解析，直接 MODULE_NOT_FOUND。preset 树的 `baseUrl` 带尾斜杠，所以直接可用。
+- **`package.json` 不能有 BOM。** 带 BOM 会让 `JSON.parse` 失败，DSH 因此读不出 `dsh.bundle` 声明，`dsh plugin add` 不会把包加进 profile 的 bundles，patch 永远不生效——表现为"装好了但模式不出现"。这个坑本包也踩过一次，`story_doctor` 里有常驻检查（`package.json 无 BOM` 那一项）。
+- **升级包之后要确认模式真的换了。** 你改的是**哪一份包**决定模式的行为：从 GitHub 装的（`dsh plugin --profile <name> add github:<作者>/dsh-story-mode`）取的是远端默认分支，本地改动没推上去就不会生效。更隐蔽的一种：早期版本或插件市场留下过一份 profile 里的包快照，`dsh plugin remove` 之后**不会**自动删掉它——它可能还留在 `node_modules` 与插件目录里，于是"装了新版但模式没变"。判断办法是看模式里有没有 `subagent_review_b1` 这个工具；清理由市场或手动删除那份快照完成（本包的 `cleanup` 脚本只处理 home 下的技能副本与旧模式副本）。开发期用 `link:` 装本地目录时，源码改动**立刻生效**，但改完要重启 profile。
+- **本包零运行时依赖**（连 `schemastery` 都没有）。ESM 的解析基准是加载入口的父路径，所以插件若 `import` 任何 `@deepseek-ai/*` 包就必须自带 `node_modules`；它什么都不 import，于是任何布局下都能加载。**改代码时不要引入裸导入。**
+
 - **v1.2.0 之前，这套流程有一个已实测的失效形态：五个角色全绿而主轴空心。** 一次真实调用里，五个审读员对一篇 23,399 字的稿子出了 19 份报告（含两次全新读者盲读），逐条命中字形、雨季倒序、浮毛时令、椅子数量、扣子崩落、字数台账，最终盲读明确写「没有大结构问题」；作者随后在半小时内用七个连续发言拆掉了它——主人公在八场里零主动推动、另一方“想要”的露出全部可被解释成尽职、关键那一跳没有任何不可否认的依据。
 
   **盲测对照（v1.2.0 补做）**：同一份 23,000 字稿、同一组派发变量、**不带任何对话上下文的新子代理**，唯一差别是 B2 的人设文件（标签随机化、判前不知对应）：
@@ -304,13 +308,14 @@ dsh-story-mode/
 
   **一条方法论备注，也是踩过的坑**：盲测要用不带对话上下文的子代理。早期我用 `subagent_fork` 做新旧人设对照，两次都“报出了缺口”——但 fork 会把整段对话（包括我写的判定标准）一起继承给被测者，**等于把答案先交给它**。那组结果分辨力为零，已作废。上面的表是改用无上下文子代理（`ralph` 的 fresh child）重跑的。
 
+
 ### 安装会改动你的 home 目录吗
 
-**不会。** `dsh plugin add` 只写 profile 的 `package.json`、`node_modules` 与 patch 层：模式住在 profile 的 `node_modules` 里（也就是 pnpm 装包的地方），技能由 preset 从包内挂载。`<DSH_HOME>/skills/` 与 `<DSH_HOME>/.agent-presets/` 都不碰，也没有需要用户去批准的构建脚本（pnpm 默认就会拦截依赖的生命周期脚本，本包不依赖它）。
+**不会。** `dsh plugin add` 只写 profile 的 `package.json`、`node_modules` 与 patch 层：模式是包内 patch 插入的一行声明，技能由同一行从包内挂载。`<DSH_HOME>/skills/` 与 `<DSH_HOME>/.agent-presets/` 都不碰，也没有需要用户去批准的构建脚本（pnpm 默认就会拦截依赖的生命周期脚本，本包不依赖它）。
 
-`cleanup` 是唯一会写你 home 的命令，而且只**删**本包自己留下的东西：指向本模式的默认预设、v1.0.1 的模式副本、带 `.dsh-story-mode.json` 归属标记的技能副本。不是本包放的一律不动。
+`cleanup` 是唯一会写你 home 的命令，而且只**删**本包自己留下的东西：指向本模式的用户默认值（0.1.7 起是 profile patch 里 `selectedDefault` 那一行）、v1.0.1 的模式副本、带 `.dsh-story-mode.json` 归属标记的技能副本。不是本包放的一律不动。
 
-**注意**：v1.0.1 把模式**复制**进 `<DSH_HOME>/.agent-presets/short-story`。那份副本会和 patch 声明的根撞 id，roster 只会认先扫到的那一个——留下过期的副本会让“改了包内文件但模式没变”发生。`check` 会报出来，`cleanup` 会清掉。
+**注意**：v1.0.1 把模式**复制**进 `<DSH_HOME>/.agent-presets/short-story`。0.1.7 不再从目录发现预设，所以那一份已经不参与加载，但留着会让人以为"改了包内文件模式却没变"。`check` 会报出来，`cleanup` 会清掉。
 
 ---
 
@@ -329,20 +334,32 @@ skills/writing-style-contract/SKILL.md 提供默认文风：克制、自然、�
 
 ~~~sh
 npm test        # 单元与契约测试（Node 自带 test runner，无需依赖）
-npm run verify  # 组合自检：把 agent.cordis.yml 当成 loader 那样读一遍
+npm run verify  # 组合自检：把 cordis.patch.yml 当成 loader 那样读一遍
 ~~~
 
-回归测试覆盖分场、引号统计、真实配额、用词线索、人物卡和卸载检查，并钉住审读流程的形态（角色各自成行、只读 toolFilter、B3/B4 的可观测触发条件、人设里不再夹带流程规则，以及 **v1.2.0 的关系轴契约**：面板 §4.0 的两个时机、B2 的两组必答项、“全可否认＝零”判据、节拍表的推动者三列、“免确认”不能跳过关系轴；**v1.2.1 的起点组**：B2 的第零组、双方各一条注意起点、“只有叙述者说得出的理由＝没有理由”、缺的起点补在开篇之前，以及“什么时候可以留白、为什么是这个人不能”）。测试只使用内存稿件和临时 DSH 主目录，不修改真实用户设置。
-npm run check 与 CLI check 都是卸载残留检查，不是单元测试或完整安装验证。
+回归测试覆盖分场、引号统计、真实配额、用词线索、人物卡和卸载检查，并钉住两类东西。**审读流程的形态**：角色各自成行、只读 toolFilter、B3/B4 的可观测触发条件、人设里不再夹带流程规则，以及 **v1.2.0 的关系轴契约**（面板 §4.0 的两个时机、B2 的两组必答项、"全可否认＝零"判据、节拍表的推动者三列、"免确认"不能跳过关系轴）与 **v1.2.1 的起点组**（B2 的第零组、双方各一条注意起点、"只有叙述者说得出的理由＝没有理由"、缺的起点补在开篇之前，以及"什么时候可以留白、为什么是这个人不能"）。**0.1.7 的组合形态**：patch 是 `insert` 层、插件行用裸包名、包内路径用 `createRequire(baseUrl)`、两份技能只从包内挂载、组合里该有的行一行不少。测试只使用内存稿件和临时 DSH 主目录，不修改真实用户设置。
+`npm run check` 与 CLI `check` 都是卸载残留检查，不是单元测试或完整安装验证。
 
-`npm run verify` 补上单元测试碰不到的那一半：它用 **loader 自己的解析器**（js-yaml + `entryListSchema`）交叉验证组合，对每个 `!!js` 表达式做编译检查，用插件自己的 `Config` 校验每行 config，并把 `toolFilter` 点名的工具与**插件源码里真正注册过的名字**对账。它需要能读到 harness 已安装的插件（仓库本身零依赖），默认按桌面版路径查找，可用 `DSH_HARNESS` 指定。
+`npm run verify` 补上单元测试碰不到的那一半：它用 **loader 自己的解析器**（js-yaml + `entryListSchema`）交叉验证组合，对每个 `!!js` 表达式做编译**与求值**检查（求值环境按运行时的样子搭：临时目录里造一个 `node_modules/dsh-story-mode` 指回仓库，`baseUrl` 指向它），用插件自己的 `Config` 校验每行 config，并把 `toolFilter` 点名的工具与**插件源码里真正注册过的名字**对账，还会检查两份技能与五个人设文件真的能从包内读到。
+它需要能读到 harness 已安装的插件（仓库本身零依赖）：
+
+~~~sh
+# harness 是普通目录（CLI 安装、解包后的运行时）
+DSH_HARNESS=<harness 目录> npm run verify
+
+# harness 只存在于 Electron 的 app.asar 里：普通 Node 读不了 asar 内的模块路径，
+# 先解包再指过去（解包脚本见仓库外的任意 asar 工具），或用能读 asar 的运行时跑
+~~~
+
 两件它**不能**代替的事：真实会话里的工具清单，以及子代理真的能起来。装好后请开一个会话跑一次新写或片段，确认 `subagent_review_b1` … `subagent_review_b5` 五个工具都在、派一次能拿到 `started subagent <childId>`。
 
 ### 为什么 `!!js` 里不能写 `'\n'`
 
-`!!js` 的值在组合里是 **YAML 双引号标量**，YAML 会先处理转义：`'\n'` 在 loader 拿到源码之前就变成了真正的换行，于是 JS 里出现跨行的字符串字面量 → `SyntaxError: Invalid or unexpected token`。而 preset 的 `mount` 契约是“setup 里抛错就回滚整次 agent 创建”，所以表现不是报错，而是**点新会话没反应**；roster 里 `broken` 仍是 `null`，因为文件形状完全合法。v1.1.3 正是栽在 B4 那一行的换行拼接上（另外六个 `!!js` 不含转义，所以只有它炸）。
+`!!js` 的值在组合里是 **YAML 双引号标量**，YAML 会先处理转义：`'\n'` 在 loader 拿到源码之前就变成了真正的换行，于是 JS 里出现跨行的字符串字面量 → `SyntaxError: Invalid or unexpected token`。
 
-结论：需要换行就写 `String.fromCharCode(10)`；需要字面反斜杠就用单引号或折叠标量（它们不处理转义）。`npm run verify` 现在会把这两类写法都拦下来——先做交叉验证比对两种解析结果，再对双引号标量里的反斜杠做预防性检查。
+v1.1.3 正是栽在 B4 那一行的换行拼接上（另外六个 `!!js` 不含转义，所以只有它炸）。当时的后果特别难查：旧版 roster 在**挂载期**才求值，抛错回滚整次 agent 创建，表现为"点新会话没反应"，而 roster 里 `broken` 仍是 `null`。0.1.7 把这类失败变响了——预设在启动时提前挂载，任何一行失败都会让 roster 里那一条带上 `broken` 文案，`story_doctor` 直接把它打印出来。
+
+结论：需要换行就写 `String.fromCharCode(10)`。`npm run verify` 会把这类写法拦下来（交叉验证比对两种解析结果 + 对双引号标量里的反斜杠做预防性检查），`story_doctor` 也会静态检查一遍。
 
 ---
 

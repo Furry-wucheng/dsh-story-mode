@@ -3,16 +3,21 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, isAbsolute } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { renderDoctor } from '../lib/doctor.js'
+import { doctorTool, renderDoctor } from '../lib/doctor.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const read = (relative) => readFile(join(root, relative), 'utf8')
 
-const COMPOSITION = 'presets/short-story/agent.cordis.yml'
-const PANEL = 'presets/short-story/skills/short-story/references/review-panel.md'
-const SKILL = 'presets/short-story/skills/short-story/SKILL.md'
-const WORKFLOW = 'presets/short-story/skills/short-story/references/writing-workflow.md'
-const REVIEWER_DIR = 'presets/short-story/skills/short-story/references/reviewers'
+/**
+ * 组合现在住在 bundle patch 里：`cordis.patch.yml` 插入一行 preset 声明，
+ * 子插件列表就是那一行的 `config.plugins`。技能住在包根的 `skills/`。
+ */
+const COMPOSITION = 'cordis.patch.yml'
+const SKILLS = 'skills'
+const SKILL = 'skills/short-story/SKILL.md'
+const PANEL = 'skills/short-story/references/review-panel.md'
+const WORKFLOW = 'skills/short-story/references/writing-workflow.md'
+const REVIEWER_DIR = 'skills/short-story/references/reviewers'
 /** 角色、工具名、人设文件、B3/B4 触发条件里必须出现的可观测判据。 */
 const ROLES = [
   { role: 'b1', file: 'b1-cold-read.md', tool: 'subagent_review_b1' },
@@ -21,6 +26,32 @@ const ROLES = [
   { role: 'b4', file: 'b4-style-execution.md', tool: 'subagent_review_b4' },
   { role: 'b5', file: 'b5-physical-continuity.md', tool: 'subagent_review_b5' },
 ]
+
+test('the patch inserts its own preset declaration row instead of touching an official row', async () => {
+  const patch = await read(COMPOSITION)
+  // 0.1.7 起 `agent-presets` 这一行不存在了：注册表不扫描目录，preset 是普通行。
+  assert.doesNotMatch(patch, /^-\s*id:\s*agent-presets\s*$/m, '旧版 roster 行已随 0.1.7 消失')
+  assert.match(patch, /^-\s*insert:\s*$/m, '必须是 insert 层：不覆盖别人的行')
+  assert.match(patch, /^ {4}- id: preset-short-story$/m)
+  assert.match(patch, /^ {6}name: '@deepseek-ai\/dsh-agent-preset'$/m)
+  assert.match(patch, /^ {8}id: short-story$/m, 'config.id 是会话保存的 preset 标识符')
+  assert.match(patch, /^ {8}name: 短篇小说模式$/m)
+  assert.match(patch, /^ {8}description: /m)
+  assert.match(patch, /^ {8}order: 5$/m, '官方预设占 1–4，本模式排在其后')
+})
+
+test('the plugin row resolves by bare package name, never by path or expression', async () => {
+  const patch = await read(COMPOSITION)
+  assert.match(patch, /- id: story-tools\n\s+name: dsh-story-mode$/m)
+  // loader 只对 config 插值；name 会原样丢给 import()，`!!js` 名字整行报错。
+  assert.doesNotMatch(patch, /^\s*name:\s*!!js/m)
+  // config.plugins 里的相对路径不会被启动器改写：它会按 profile 目录解析。
+  assert.doesNotMatch(patch, /^\s*name:\s*\.\.?\//m)
+  // preset 树的 baseUrl 是 profile 目录，包内路径必须在运行时问出来。
+  assert.match(patch, /createRequire\(baseUrl\)\.resolve\('dsh-story-mode\/package\.json'\)/)
+  assert.doesNotMatch(patch, /[A-Za-z]:\\/, 'patch 里不该出现机器相关的绝对路径')
+  assert.doesNotMatch(patch, /file:\/\//)
+})
 
 test('reviewers are persistent subagents: continuable spawn plus send_message control', async () => {
   const composition = await read(COMPOSITION)
@@ -38,7 +69,7 @@ test('each review role owns its row: fixed persona plus a read-only tool filter'
   for (const { file, tool } of ROLES) {
     assert.match(composition, new RegExp(`toolName: ${tool}\\b`), `${tool} 必须有自己的工具行`)
     // persona 必须由那一行自己从角色文件读出：真装配的等价物在
-    // scripts/verify-composition.mjs（它会对文件内容求值并比对首行）。
+    // scripts/verify-composition.mjs（它会在临时解析环境里求值，并与角色文件**逐字比对**）。
     const persona = composition.match(new RegExp(`toolName: ${tool}[\\s\\S]*?persona: !!js "([^"]+)"`))
     assert.ok(persona, `${tool} 必须用 !!js 从角色人设文件读 persona`)
     assert.ok(persona[1].includes(`reviewers/${file}`), `${tool} 的 persona 必须指向 ${file}`)
@@ -218,7 +249,7 @@ test('dialogue function and character knowledge are checked, not just line shape
 
 test('the persona stays identity-only and the review conditions live in the panel', async () => {
   const composition = await read(COMPOSITION)
-  const persona = composition.match(/prefix: \|-\r?\n([\s\S]*?)\r?\n\r?\n- id: agent-instructions/)?.[1] ?? ''
+  const persona = composition.match(/prefix: \|-\r?\n([\s\S]*?)\r?\n\s*- id: agent-instructions/)?.[1] ?? ''
   assert.ok(persona.length > 0, 'persona prefix 必须还在')
   // 流程规则下沉到参考文件，人设不该再背着它们；常驻文本的每一句都会随每个子代理重发。
   assert.doesNotMatch(persona, /ask_user_question/)
@@ -241,8 +272,8 @@ test('story_lint is documented as a self-check tool, not a review input', async 
   assert.doesNotMatch(panel, /lint 线索/)
 })
 
-test('workflow references resolve from their source files within the packaged preset', async () => {
-  const presetRoot = resolve(root, 'presets/short-story')
+test('workflow references resolve from their source files within the packaged skills', async () => {
+  const skillsRoot = resolve(root, SKILLS)
   const visited = new Set()
   async function visit(file) {
     if (visited.has(file)) return
@@ -251,8 +282,8 @@ test('workflow references resolve from their source files within the packaged pr
     assert.ok(text.trim(), `${file} must not be empty`)
     for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+\.md)\)/g)) {
       const target = resolve(dirname(file), match[1])
-      const fromPreset = relative(presetRoot, target)
-      assert.ok(!isAbsolute(fromPreset) && !fromPreset.startsWith('..'), `${target} must stay in the preset`)
+      const fromSkills = relative(skillsRoot, target)
+      assert.ok(!isAbsolute(fromSkills) && !fromSkills.startsWith('..'), `${target} must stay in the packaged skills`)
       await visit(target)
     }
   }
@@ -260,59 +291,197 @@ test('workflow references resolve from their source files within the packaged pr
   assert.ok(visited.has(resolve(root, WORKFLOW)), 'shared writing workflow must be reachable from the entry')
   assert.ok(visited.has(resolve(root, PANEL)), 'review panel must be reachable from the entry')
   const manifest = JSON.parse(await read('package.json'))
-  assert.ok(manifest.files.includes('presets'), 'workflow resources must be included in the package')
+  assert.ok(manifest.files.includes('skills'), 'skill resources must be included in the package')
+  assert.ok(!manifest.files.includes('presets'), 'presets/ no longer exists: the preset is the patch row')
 })
 
-test('the composition stays portable and keeps the contract scoped to this preset', async () => {
+test('the composition keeps every row this writing mode depends on', async () => {
   const composition = await read(COMPOSITION)
-  assert.doesNotMatch(composition, /[A-Za-z]:\\/, '组成里不该出现机器相关的绝对路径')
-  assert.doesNotMatch(composition, /file:\/\//)
-  assert.match(composition, /new URL\('skills\/', baseUrl\)/)
-  assert.match(composition, /new URL\('\.\.\/\.\.\/skills\/', baseUrl\)/)
+  // 少一行不一定报错，只会静默少一项能力：没有 present 就没法交付稿件，没有
+  // ask_user 就没法在接稿时一次问清约束，没有 tool-fs-search 就只能通读改稿。
+  // 所以把"没它就不成立"的行全部点名钉住。
+  const required = [
+    'preset-short-story',
+    'persona', 'agent-instructions',
+    'tool-fs', 'tool-fs-search', 'tool-str-replace-editor', 'story-tools',
+    'skill-filesystem', 'tool-skill',
+    'compaction', 'compaction-basic', 'command-compact', 'tool-result-pruner',
+    'tool-subagent', ...ROLES.map(({ tool }) => tool.replace(/^subagent_/, 'tool-subagent-').replace(/_/g, '-')),
+    'tool-subagent-control', 'tool-subagent-list-agents',
+    'tool-ask-user', 'command-goal', 'tool-goal', 'tool-web', 'present',
+  ]
+  for (const id of required) {
+    assert.match(composition, new RegExp(`^\\s*- id: ${id}\\s*$`, 'm'), `组合里缺了 ${id} 这一行`)
+  }
 })
 
-/** 一份"全部正常"的自检报告，用来单独验证新增那一行的渲染与计数。 */
+test('both skills are mounted into this preset scope only', async () => {
+  const composition = await read(COMPOSITION)
+  // 一个技能根，两份技能；都从包内挂载，用户根一个副本都不放。
+  const dirs = composition.match(/customSkillDirs:\s*\r?\n\s*- !!js "([^"]+)"/)?.[1] ?? ''
+  assert.ok(dirs.includes("'skills'"), 'customSkillDirs 必须指向包内 skills/')
+  // 只看表达式本身：文件里的注释会解释"为什么不放用户根"，那是说明不是配置。
+  assert.doesNotMatch(dirs, /DSH_HOME|\.dsh/, '技能根不该落在用户目录')
+  assert.match(dirs, /createRequire\(baseUrl\)\.resolve\('dsh-story-mode\/package\.json'\)/)
+  for (const skill of ['short-story', 'writing-style-contract']) {
+    assert.ok((await read(`${SKILLS}/${skill}/SKILL.md`)).trim().length > 0, `${skill} 必须有正文`)
+  }
+})
+
+/** 一份"全部正常"的自检报告，用来单独验证渲染与计数。 */
 function cleanReport(overrides = {}) {
   return {
     root: 'C:/pkg',
     home: 'C:/home',
     version: '1.1.1',
     viaProfile: true,
-    profileState: { profile: 'desktop', installedAt: 'C:/pkg', bundled: true, officialRosterPresent: true },
-    manifest: { parses: true, hasBom: false, declaresBundle: true, filesIncludesPresets: true },
-    patch: { present: true, targetsRosterRow: true, restatesShippedRoots: true, resolvesOwnPackage: true, hasLineComment: false },
-    presetInPackage: { status: 'ok', pluginRow: '../../lib/index.js', pluginRowResolves: true },
-    presetSourcePresent: true,
-    presetFlowSkillPresent: true,
-    presetWritingWorkflowPresent: true,
-    presetReviewPanelPresent: true,
-    presetStyleSkillPresent: true,
-    presetStyleSkillMounted: true,
-    presetReviewersReusable: true,
-    presetReviewersRoleBased: true,
-    presetReviewerFilesPresent: true,
-    reviewerRows: [],
+    profileState: { present: true, profile: 'desktop', installedAt: 'C:/pkg', bundled: true, resolvable: true, override: null },
+    manifest: { parses: true, hasBom: false, declaresBundle: true, filesIncludeSkills: true },
+    patch: {
+      present: true,
+      hasInsert: true,
+      presetRow: true,
+      presetPlugin: true,
+      presetId: true,
+      bareToolsRow: true,
+      jsRowNames: [],
+      relativeRowNames: [],
+      resolvesPackage: true,
+      pathReadCount: 7,
+      unanchoredPathReads: [],
+      riskyScalars: [],
+      hasLineComment: false,
+      customSkillDirs: true,
+      reviewerRows: {},
+      reusable: true,
+    },
+    packageFiles: {
+      libEntry: true,
+      flowSkill: true,
+      workflow: true,
+      panel: true,
+      contract: true,
+      reviewers: { b1: true, b2: true, b3: true, b4: true, b5: true },
+    },
+    reviewersComplete: true,
+    reviewersRoleBased: true,
     skill: { present: false, owned: false, dest: null, markerVersion: null },
     legacy: { present: false, ours: false, isLink: false, path: null },
+    live: {
+      status: 'ok',
+      roster: { status: 'ok', isDefault: false, name: '短篇小说模式', order: 5 },
+      composition: { status: 'ok', broken: null, rows: 24, active: 24 },
+      skills: { status: 'ok', names: ['short-story', 'writing-style-contract'] },
+      tools: { status: 'ok', names: ['story_wordcount', 'story_lint', 'story_bible', 'story_doctor'] },
+    },
     defaultPreset: null,
     cleanup: 'C:/pkg/scripts/cleanup.mjs',
     ...overrides,
   }
 }
 
-test('doctor reports reusable reviewers and fails the check when they are one-shot', () => {
+test('doctor reports a healthy installation only when the live preset is mounted', () => {
   const ok = renderDoctor(cleanReport())
-  assert.match(ok, /审读员可复用（continuable \+ send_message） \| 是 \|/)
+  assert.match(ok, /插入了 `preset-short-story` 行 \| 是 \|/)
+  assert.match(ok, /（活体）roster 里有 short-story \| 是 \|/)
+  assert.match(ok, /（活体）本模式没有被判 broken \| 是 \|/)
   assert.match(ok, /## 结论[\s\S]*一切正常/)
 
-  const degraded = renderDoctor(cleanReport({ presetReviewersReusable: false }))
-  assert.match(degraded, /审读员可复用（continuable \+ send_message） \| \*\*否/)
-  assert.match(degraded, /- preset 里的审读员不是可复用子代理/)
+  // 运行时看不到模式＝没装起来，不能给"一切正常"。
+  const missing = renderDoctor(cleanReport({ live: { status: 'ok', roster: { status: 'missing', ids: ['standard'] } } }))
+  assert.match(missing, /运行时 roster 里没有 short-story/)
+  assert.doesNotMatch(missing, /一切正常/)
 })
 
-test('doctor reports a missing shared writing workflow instead of a healthy installation', () => {
-  const report = renderDoctor(cleanReport({ presetWritingWorkflowPresent: false }))
-  assert.match(report, /共用写作流程[^\n]*无法加载/)
+test('doctor refuses to call an unmounted or broken preset healthy', () => {
+  const broken = renderDoctor(cleanReport({
+    live: {
+      status: 'ok',
+      roster: { status: 'ok', isDefault: false },
+      composition: { status: 'ok', broken: 'story-tools (dsh-story-mode): never started', rows: 24, active: 23 },
+    },
+  }))
+  assert.match(broken, /运行时报告本模式 broken/)
+  assert.match(broken, /story-tools \(dsh-story-mode\): never started/)
+  assert.doesNotMatch(broken, /一切正常/)
+})
+
+test('doctor flags the patch shapes that make the row unloadable', () => {
+  const jsName = renderDoctor(cleanReport({
+    patch: { ...cleanReport().patch, jsRowNames: ['name: !!js'], bareToolsRow: false },
+  }))
+  assert.match(jsName, /有行的 name 写成 !!js/)
+  assert.match(jsName, /story-tools 行没有用裸包名/)
+
+  const relative = renderDoctor(cleanReport({
+    patch: { ...cleanReport().patch, relativeRowNames: ['../../lib/index.js'] },
+  }))
+  assert.match(relative, /有行的 name 写成相对路径/)
+
+  const noInsert = renderDoctor(cleanReport({
+    patch: { ...cleanReport().patch, hasInsert: false, presetRow: false },
+  }))
+  assert.match(noInsert, /不是 insert 层/)
+  assert.match(noInsert, /patch 没有插入 preset-short-story 行/)
+
+  const unanchored = renderDoctor(cleanReport({
+    patch: { ...cleanReport().patch, unanchoredPathReads: ['readFileSync(relative)'] },
+  }))
+  assert.match(unanchored, /没有走 createRequire\(baseUrl\)/)
+})
+
+test('doctor reports missing skills and reviewers instead of a healthy installation', () => {
+  const report = renderDoctor(cleanReport({
+    packageFiles: { ...cleanReport().packageFiles, workflow: false, contract: false, reviewers: { b1: true, b2: false, b3: true, b4: true, b5: true } },
+    reviewersComplete: false,
+    reviewersRoleBased: false,
+    live: {
+      status: 'ok',
+      roster: { status: 'ok', isDefault: false },
+      composition: { status: 'ok', broken: null, rows: 24, active: 24 },
+      skills: { status: 'ok', names: ['short-story'] },
+      tools: { status: 'ok', names: ['story_wordcount'] },
+    },
+  }))
   assert.match(report, /包内缺少写作技能的 references\/writing-workflow\.md/)
+  assert.match(report, /包内缺少审读角色人设文件/)
+  assert.match(report, /审读角色没有各自成行/)
+  assert.match(report, /本作用域里技能不齐/)
+  assert.match(report, /本作用域里 story_\* 工具只有 1 个/)
   assert.doesNotMatch(report, /一切正常/)
+})
+
+test('doctor warns before uninstall when the mode is the selected default', () => {
+  const report = renderDoctor(cleanReport({
+    live: {
+      status: 'ok',
+      roster: { status: 'ok', isDefault: true },
+      composition: { status: 'ok', broken: null, rows: 24, active: 24 },
+      skills: { status: 'ok', names: ['short-story', 'writing-style-contract'] },
+      tools: { status: 'ok', names: ['story_wordcount', 'story_lint', 'story_bible', 'story_doctor'] },
+    },
+  }))
+  assert.match(report, /你的默认模式就是本模式/)
+  assert.match(report, /- 默认预设指向本模式，卸载前必须先清理/)
+})
+
+test('doctor says plainly when the live probe is unavailable', () => {
+  const report = renderDoctor(cleanReport({ live: { status: 'unavailable', reason: '独立调用' } }))
+  assert.match(report, /（活体）运行时检查 \| 未取到（独立调用） \|/)
+  assert.match(report, /静态检查全部通过/)
+  assert.doesNotMatch(report, /一切正常/)
+})
+
+test('story_doctor is a callable registry definition, not just a renderer', async () => {
+  // 这一条钉住一次真实事故：`makeTool` 收的是 `run`，写成 `execute` 时
+  // 直接调用 runDoctor()/renderDoctor() 的测试全都通过，只有**注册表真调用一次**
+  // 才会暴露 "run is not a function" —— 而那正是模型点下去的那一刻。
+  const definition = doctorTool()
+  assert.equal(definition.name, 'story_doctor')
+  assert.equal(typeof definition.execute, 'function')
+  assert.equal(typeof definition.output?.render, 'function')
+  const result = await definition.execute({}, { signal: undefined })
+  assert.equal(typeof result.text, 'string')
+  assert.match(result.text, /# dsh-story-mode 安装自检/)
+  assert.match(result.text, /## 结论/)
 })

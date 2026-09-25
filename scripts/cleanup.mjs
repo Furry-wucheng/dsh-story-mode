@@ -3,14 +3,13 @@
  *
  * ── 这个包不往你的 home 里装东西 ────────────────────────────────────────────
  *
- * 模式住在包里（`presets/short-story/`）：`cordis.patch.yml` 在 profile 合成配置
- * 时用 `createRequire(ctx.baseUrl)` 问出本包装在哪，把包内 `presets/` 声明为
- * roster 的一个根。文风契约由 preset 的 `customSkillDirs` 从包内挂载。
+ * 模式是包自己 `cordis.patch.yml` 里**插入的一行 preset 声明**：子插件列表写在
+ * 那一行的 `config.plugins` 里，技能由同一行用 `customSkillDirs` 从包内挂载。
  *
  * 所以 `dsh plugin add` 一步就完整可用，`dsh plugin remove` 一步就全部消失——
  * 两头都不需要本脚本，也没有"装完还要再跑一条命令"这回事。
  *
- * ── 文风契约为什么**不**落地到 <DSH_HOME>/skills ────────────────────────────
+ * ── 两份技能为什么**不**落地到 <DSH_HOME>/skills ────────────────────────────
  *
  * 那是**用户根**（`skill-filesystem` 里 rank 400 的 `user-dsh`），而每个 preset
  * 自己挂的 skill-filesystem 实例都会扫它（`includeDefaultRoots` 默认 true）。
@@ -23,16 +22,22 @@
  *
  * 三件 `dsh plugin remove` 管不到、或历史版本留下的东西：
  *
- *   1. **悬空的默认预设**。在设置里把「短篇小说模式」设成默认模式之后再
+ *   1. **悬空的默认模式**。在模式选择器里把「短篇小说模式」设成默认之后再
  *      `dsh plugin remove`，新建会话会直接以 `agent-preset/not-found` 失败：
- *      `AgentPresets.resolve()` 找不到默认 id 时**不回退**到 `standard`，而真正
- *      会顺手清掉这个默认值的 `AgentPresets.remove()` 被卸载绕过了。
- *      所以**卸载前**跑一次本脚本（或者卸载后在设置里改回 `standard`）。
+ *      注册表的 `resolve()`／`retain()` 找不到默认 id 时**不回退**到 `standard`，
+ *      而会顺手清掉这个默认值的那条路径被卸载绕过了。
+ *
+ *      0.1.7 起这个默认值存在**用户自己选的** volatile 字段 `selectedDefault` 上，
+ *      由 loader 写回它所在的那一层——实测落在 `<DSH_HOME>/profiles/<name>/cordis.patch.yml`
+ *      的 `agent-preset-registry` 那一行（Web 配置编辑器也写在这里），home 级
+ *      patch 同理。本脚本因此扫这些文件里的 `selectedDefault:`，命中就**只删那一行**
+ *      （删掉即回落到部署默认值），不动同一条目里的其他字段。
+ *
+ *      所以**卸载前**跑一次本脚本（或者卸载后在模式选择器里改回 `standard`）。
  *
  *   2. **v1.0.1 的模式副本**。那个版本的 `install` 会把模式复制到
- *      `<DSH_HOME>/.agent-presets/short-story`。它现在会和 patch 声明的根撞 id，
- *      roster 只会认先扫到的那一个——留下过期的副本会让"改了包内文件但模式
- *      没变"这种故障发生。
+ *      `<DSH_HOME>/.agent-presets/short-story`。0.1.7 不再从目录发现预设，这一份
+ *      已经不会被加载，但留着会让人以为"改了包内文件模式却没变"。
  *
  *   3. **用户根里的文风契约副本**。v1.0.1／v1.0.2 提供过一个可选的 install，
  *      往 `<DSH_HOME>/skills/writing-style-contract` 放一份。本包不再安装它，
@@ -47,7 +52,7 @@
  * 包作为 profile 依赖安装时 bin 不在 PATH 上，用官方转发形式：
  *   dsh plugin --profile <name> exec dsh-story-mode cleanup
  */
-import { lstat, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -56,8 +61,10 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = dirname(HERE)
 const CHECK_ONLY = process.argv.includes('--check')
 
-/** 本模式在 roster 里的 id，也是旧安装的目录名。 */
+/** 本模式的 preset id，也是旧安装的目录名。 */
 const PRESET_ID = 'short-story'
+/** 声明 preset 的注册表条目 id：用户默认值写在它的 config 里。 */
+const REGISTRY_ROW_ID = 'agent-preset-registry'
 /** 文风契约在技能根下的目录名。 */
 const SKILL_NAME = 'writing-style-contract'
 /** 归属标记：回答"这一份是谁装的"。 */
@@ -188,14 +195,67 @@ async function cleanLegacyPreset() {
   }
 }
 
-// ── 悬空的默认预设 ──────────────────────────────────────────────────────────
+// ── 悬空的默认模式 ──────────────────────────────────────────────────────────
 //
-// `AgentPresets.remove()` 会顺手清掉指向被删预设的用户默认值；卸载绕开那个
-// 方法，所以必须自己清——否则 Web 端新建会话（不带显式 preset）会以
+// 注册表找不到默认 id 时不会回退到 `standard`；而卸载绕开了会顺手清掉这个
+// 默认值的那条路径，所以必须自己清——否则新建会话（不带显式 preset）会以
 // `agent-preset/not-found` 直接失败，而那时包已经被 remove、这个工具也没了。
 // 所以这一段是**卸载前**跑的。
 
-async function readDefaultPreset() {
+/**
+ * 所有可能写着"用户默认模式"的文件。
+ *
+ * 0.1.7 把用户选择放在 `agent-preset-registry` 行的 volatile 字段
+ * `config.selectedDefault` 上，由 loader 写回该条目所在的那一层：实测是
+ * `<profile>/cordis.patch.yml`（Web 配置编辑器也写这里），home 级 patch 同理。
+ * 逐 profile 扫一遍，是因为用户可能在任意一个 profile 里选过这个模式。
+ */
+async function defaultPresetFiles() {
+  const files = []
+  try {
+    const profiles = await readdir(join(HOME, 'profiles'), { withFileTypes: true })
+    for (const entry of profiles) {
+      if (!entry.isDirectory()) continue
+      const path = join(HOME, 'profiles', entry.name, 'cordis.patch.yml')
+      if (await exists(path)) files.push(path)
+    }
+  } catch {
+    // 没有 profiles 目录就只查 home 层
+  }
+  const homePatch = join(HOME, 'cordis.patch.yml')
+  if (await exists(homePatch)) files.push(homePatch)
+  return files
+}
+
+/**
+ * 在一份 patch 文件里找"默认模式 = 本模式"的那一行。
+ *
+ * 只认两种写法，而且必须落在 `agent-preset-registry` 那一条目里：
+ *   selectedDefault: <id>   → 删掉整行（回落到部署默认值）
+ *   default: <id>           → 只能改值（这是必填字段，删了整行 schema 会失败）
+ * 返回 null 表示这份文件不需要动。
+ */
+export function findDefaultPresetLine(raw, presetId = PRESET_ID) {
+  const idPattern = new RegExp(`^['"]?${presetId}['"]?$`)
+  let currentRow = null
+  const lines = raw.split(/\r?\n/)
+  for (let i = 0; i < lines.length; i += 1) {
+    const rowMatch = lines[i].match(/^-\s*id:\s*(\S+)\s*$/)
+    if (rowMatch !== null) {
+      currentRow = rowMatch[1]
+      continue
+    }
+    if (currentRow !== REGISTRY_ROW_ID) continue
+    const fieldMatch = lines[i].match(/^(\s+)(selectedDefault|default):\s*(.*?)\s*$/)
+    if (fieldMatch === null) continue
+    if (!idPattern.test(fieldMatch[3].replace(/^['"]|['"]$/g, ''))) continue
+    return { line: i, field: fieldMatch[2], indent: fieldMatch[1] }
+  }
+  return null
+}
+
+/** 旧位置：`<DSH_HOME>/settings.yaml` 里 `agent-presets:` 块下的那一行。 */
+async function readLegacyDefaultPreset() {
   const raw = await readIfPresent(SETTINGS)
   if (raw === null) return null
   const lines = raw.split(/\r?\n/)
@@ -214,46 +274,80 @@ async function readDefaultPreset() {
   return null
 }
 
-/** 清掉指向本模式的用户默认预设。只删那一行，其余逐字保留。 */
+/**
+ * 清掉指向本模式的用户默认值。
+ *
+ * 逐字保留文件其余部分：只删/改那一行，不重排、不重新序列化 YAML——
+ * 这是**用户的** patch 层，本包无权重写它。
+ */
 async function clearDanglingDefault() {
-  const current = await readDefaultPreset()
-  if (current === null) return 'unset'
-  if (current !== PRESET_ID) return 'other'
+  const targets = []
+  for (const file of await defaultPresetFiles()) {
+    const raw = await readIfPresent(file)
+    if (raw === null) continue
+    const hit = findDefaultPresetLine(raw)
+    if (hit !== null) targets.push({ file, raw, hit })
+  }
+  const legacy = await readLegacyDefaultPreset()
+  const legacyHit = legacy === PRESET_ID ? { file: SETTINGS, raw: null, hit: { field: 'default' } } : null
+
+  if (targets.length === 0 && legacyHit === null) {
+    if (legacy !== null) return { status: 'other', preset: legacy }
+    return { status: 'unset' }
+  }
 
   if (CHECK_ONLY) {
-    console.log(`  [待清理] settings.yaml 的默认预设指向 ${PRESET_ID}`)
+    for (const target of targets) {
+      console.log(`  [待清理] ${target.file} 第 ${target.hit.line + 1} 行：${target.hit.field} = ${PRESET_ID}`)
+    }
+    if (legacyHit !== null) console.log('  [待清理] settings.yaml 的默认预设指向 ' + PRESET_ID)
     console.log('         不清的话，卸载包之后新建会话会以 agent-preset/not-found 失败。')
-    return 'cleared'
+    return { status: 'cleared' }
   }
 
-  const lines = (await readFile(SETTINGS, 'utf8')).split(/\r?\n/)
-  const start = lines.findIndex((line) => /^agent-presets:\s*$/.test(line))
-  if (start < 0) return 'unset'
+  for (const target of targets) {
+    const lines = target.raw.split(/\r?\n/)
+    if (target.hit.field === 'selectedDefault') {
+      lines.splice(target.hit.line, 1)
+    } else {
+      // `default` 是注册表条目的必填字段：只把值换回部署默认值，不删行。
+      lines[target.hit.line] = `${target.hit.indent}default: standard`
+    }
+    await writeFile(target.file, lines.join('\n'), 'utf8')
+    console.log(`  [已清理] ${target.file}（${target.hit.field} → ${target.hit.field === 'selectedDefault' ? '回落部署默认值' : 'standard'}）`)
+  }
 
-  const kept = [...lines]
-  for (let i = start + 1; i < kept.length; i += 1) {
-    const line = kept[i]
-    if (line.trim().length === 0) continue
-    if (/^\S/.test(line)) break
-    if (/^\s+default:/.test(line)) {
-      kept.splice(i, 1)
-      break
+  if (legacyHit !== null) {
+    const lines = (await readFile(SETTINGS, 'utf8')).split(/\r?\n/)
+    const start = lines.findIndex((line) => /^agent-presets:\s*$/.test(line))
+    if (start >= 0) {
+      const kept = [...lines]
+      for (let i = start + 1; i < kept.length; i += 1) {
+        const line = kept[i]
+        if (line.trim().length === 0) continue
+        if (/^\S/.test(line)) break
+        if (/^\s+default:/.test(line)) {
+          kept.splice(i, 1)
+          break
+        }
+      }
+      // 整个块只剩 `agent-presets:` 一行时把它也去掉，别留孤零零的键。
+      const blockStart = kept.findIndex((line) => /^agent-presets:\s*$/.test(line))
+      if (blockStart >= 0) {
+        let hasChild = false
+        for (let i = blockStart + 1; i < kept.length; i += 1) {
+          const line = kept[i]
+          if (line.trim().length === 0) continue
+          hasChild = !/^\S/.test(line)
+          break
+        }
+        if (!hasChild) kept.splice(blockStart, 1)
+      }
+      await writeFile(SETTINGS, kept.join('\n'), 'utf8')
+      console.log('  [已清理] settings.yaml 的默认预设（旧位置）')
     }
   }
-  // 整个块只剩 `agent-presets:` 一行时把它也去掉，别留孤零零的键。
-  const blockStart = kept.findIndex((line) => /^agent-presets:\s*$/.test(line))
-  if (blockStart >= 0) {
-    let hasChild = false
-    for (let i = blockStart + 1; i < kept.length; i += 1) {
-      const line = kept[i]
-      if (line.trim().length === 0) continue
-      hasChild = !/^\S/.test(line)
-      break
-    }
-    if (!hasChild) kept.splice(blockStart, 1)
-  }
-  await writeFile(SETTINGS, kept.join('\n'), 'utf8')
-  return 'cleared'
+  return { status: 'cleared' }
 }
 
 // ── 入口 ────────────────────────────────────────────────────────────────────
@@ -261,24 +355,27 @@ async function clearDanglingDefault() {
 console.log(`dsh-story-mode ${CHECK_ONLY ? '检查' : '清理'}`)
 console.log(`  包目录      ${PACKAGE_ROOT}`)
 console.log(`  DSH 主目录  ${HOME}`)
-console.log(`  模式归属    ${installedViaProfile() ? '由 profile 的 patch 自动接管（本脚本不参与）' : '未装入 profile，patch 不会生效'}`)
+console.log(`  模式归属    ${installedViaProfile() ? '由 profile 的 bundle patch 插入的 preset 声明行自动接管（本脚本不参与）' : '未装入 profile，patch 不会生效'}`)
 console.log('')
 
 const skill = await removeSkillCopy()
 const legacy = await cleanLegacyPreset()
 const cleared = await clearDanglingDefault()
 
-const pending = [skill, legacy, cleared].some((result) => ['removed', 'cleaned', 'cleared'].includes(result))
+const pending = [skill, legacy, cleared.status].some((result) => ['removed', 'cleaned', 'cleared'].includes(result))
 console.log('')
 
 if (skill === 'keep' || legacy === 'keep') {
   console.log('不是本包放的东西已原样保留，见上面的提示。')
+}
+if (cleared.status === 'other') {
+  console.log(`用户选的默认模式是 ${cleared.preset}，不是本模式，卸载安全。`)
 }
 
 if (CHECK_ONLY && pending) {
   console.log('有待清理的项目。去掉 --check 运行即可完成。')
   process.exitCode = 1
 } else {
-  console.log('就位。模式本身不需要清理：它住在包里，卸载包就没了。')
+  console.log('就位。模式本身不需要清理：它是包里 patch 插入的一行声明，卸载包就没了。')
   console.log('  dsh plugin --profile <name> remove dsh-story-mode')
 }
