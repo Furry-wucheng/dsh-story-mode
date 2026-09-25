@@ -91,6 +91,28 @@ test('the dispatch budget caps new reviewers and mandates reuse', async () => {
   assert.doesNotMatch(panel, /每版都派一位新读者/)
 })
 
+test('logic review stays after the draft; only the relationship axis runs at plan stage', async () => {
+  const panel = await read(PANEL)
+  const workflow = await read(WORKFLOW)
+  const skill = await read(SKILL)
+  const readme = await read('README.md')
+  // 方案阶段那一次是关系轴的"计划检查"（只有节拍表与人物卡），逻辑审读是完稿后的
+  // 常规轮次（读正文、核设定与因果）。把两者说成一件事，会让人以为逻辑审读在动笔前
+  // 就做过了——那正是这一版要修掉的表述。
+  assert.match(panel, /第 1 条不是逻辑审读，别记错顺序/)
+  assert.match(panel, /逻辑审读是第 2 条/)
+  assert.match(panel, /常规逻辑审读在完稿之后/)
+  assert.match(panel, /默认派，在完稿之后/)
+  assert.match(workflow, /逻辑审读也在内——都在完稿之后/)
+  assert.match(workflow, /方案阶段的 §4\.0 是\*\*计划检查\*\*，不是逻辑审读/)
+  assert.match(skill, /逻辑审读本身仍在完稿之后/)
+  assert.match(readme, /逻辑审读在完稿之后/)
+  // 被取代的旧写法不能回来。
+  assert.doesNotMatch(panel, /方案阶段（§4\.0 的关系轴审读）建一次，成稿后发给它复核/)
+  assert.doesNotMatch(workflow, /方案阶段的 §4\.0 就用\*\*将来要读正文的那位 B2\*\*/)
+  assert.doesNotMatch(readme, /B2 一位（方案阶段建，成稿后发给它复核）/)
+})
+
 test('each review role owns its row: fixed persona plus a read-only tool filter', async () => {
   const composition = await read(COMPOSITION)
   for (const { file, tool } of ROLES) {
