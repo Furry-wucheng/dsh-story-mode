@@ -91,26 +91,33 @@ test('the dispatch budget caps new reviewers and mandates reuse', async () => {
   assert.doesNotMatch(panel, /每版都派一位新读者/)
 })
 
-test('logic review stays after the draft; only the relationship axis runs at plan stage', async () => {
+test('logic review and the relationship axis are one round, both after the draft', async () => {
   const panel = await read(PANEL)
   const workflow = await read(WORKFLOW)
   const skill = await read(SKILL)
   const readme = await read('README.md')
-  // 方案阶段那一次是关系轴的"计划检查"（只有节拍表与人物卡），逻辑审读是完稿后的
-  // 常规轮次（读正文、核设定与因果）。把两者说成一件事，会让人以为逻辑审读在动笔前
-  // 就做过了——那正是这一版要修掉的表述。
-  assert.match(panel, /第 1 条不是逻辑审读，别记错顺序/)
-  assert.match(panel, /逻辑审读是第 2 条/)
-  assert.match(panel, /常规逻辑审读在完稿之后/)
-  assert.match(panel, /默认派，在完稿之后/)
-  assert.match(workflow, /逻辑审读也在内——都在完稿之后/)
-  assert.match(workflow, /方案阶段的 §4\.0 是\*\*计划检查\*\*，不是逻辑审读/)
-  assert.match(skill, /逻辑审读本身仍在完稿之后/)
-  assert.match(readme, /逻辑审读在完稿之后/)
-  // 被取代的旧写法不能回来。
-  assert.doesNotMatch(panel, /方案阶段（§4\.0 的关系轴审读）建一次，成稿后发给它复核/)
-  assert.doesNotMatch(workflow, /方案阶段的 §4\.0 就用\*\*将来要读正文的那位 B2\*\*/)
-  assert.doesNotMatch(readme, /B2 一位（方案阶段建，成稿后发给它复核）/)
+  const b2 = await read(`${REVIEWER_DIR}/b2-story-logic.md`)
+  // 关系轴不是另一次派发，也不是方案阶段的活：它和逻辑审读是同一位 B2 的同一轮，
+  // 都读已经落地的正文。方案阶段没有正文，判不出可信结论，所以不派独立读者。
+  assert.match(panel, /逻辑审读与关系轴是同一位 B2、同一轮、同一个时间/)
+  assert.match(panel, /方案阶段不派独立读者/)
+  assert.match(panel, /## 4\.0 关系轴审读（充分性测试，与逻辑审读同一轮，在完稿之后）/)
+  assert.match(panel, /它就在 B2 的常规轮次里/)
+  assert.match(workflow, /所有独立审读都在完稿之后/)
+  assert.match(workflow, /关系轴（§4\.0）不是另一次派发，它就是 B2 那一轮的一部分/)
+  assert.match(workflow, /方案阶段不派读者/)
+  assert.match(skill, /它与逻辑审读是同一轮/)
+  assert.match(skill, /自查不算独立审读/)
+  assert.match(readme, /关系轴\*\*不另派\*\*/)
+  assert.match(b2, /这一节永远是对着正文做的/)
+  assert.match(b2, /缺少正文，关系轴无法核对/)
+  // 被取消的写法不能回来：方案阶段的独立派发、两个时机、无正文作答。
+  assert.doesNotMatch(panel, /方案阶段（默认，必做，先于任何正文落地）/)
+  assert.doesNotMatch(panel, /跑在哪两个时机/)
+  assert.doesNotMatch(workflow, /方案先过 §4\.0，再动笔/)
+  assert.doesNotMatch(workflow, /分两个时机/)
+  assert.doesNotMatch(skill, /方案阶段一次、首次成稿后一次/)
+  assert.doesNotMatch(b2, /方案阶段必有一次/)
 })
 
 test('each review role owns its row: fixed persona plus a read-only tool filter', async () => {
@@ -177,10 +184,12 @@ test('the relationship axis is a first-class pass, not a by-product of consisten
   assert.match(panel, /## 4\.0 关系轴审读/)
   assert.match(panel, /一致性/)
   assert.match(panel, /充分性/)
-  assert.match(panel, /由 \*\*B2 承担\*\*/)
-  // 两个时机都必须在面板里出现：方案阶段先跑，成稿后核一遍。
-  assert.match(panel, /方案阶段（默认，必做，先于任何正文落地）/)
+  assert.match(panel, /所以关系轴\*\*由 B2 承担\*\*/)
+  // 落点只有成稿之后（v1.3.3 起）：逻辑与关系轴同一位、同一轮、同一个时间。
+  assert.match(panel, /与逻辑审读同一轮，在完稿之后/)
+  assert.match(panel, /逻辑审读与关系轴是同一位 B2、同一轮、同一个时间/)
   assert.match(panel, /首次成稿后/)
+  assert.doesNotMatch(panel, /方案阶段（默认，必做，先于任何正文落地）/)
   // 不接受概括结论。
   assert.match(panel, /不接受“整体尚可”|不接受"整体尚可"/)
   // 关系轴不能由另外四个角色兼任（它们的边界里都写着不管剧情因果）。
@@ -214,10 +223,11 @@ test('the relationship axis is a first-class pass, not a by-product of consisten
   assert.match(workflow, /推动者/)
   assert.match(workflow, /不改变任何一方状态的拍，是重复场景/)
   assert.match(workflow, /不可否认/)
-  // 5. 方案阶段先跑（C4：最便宜的拦截），且"免确认"不能跳过它。
+  // 5. 关系轴那一次落点在成稿之后（v1.3.3 起不早于正文落地），且"免确认"不能跳过它。
   assert.match(workflow, /### 4\.0 关系轴审读/)
-  assert.match(skill, /方案先过关系轴审读/)
-  assert.match(skill, /不因"免确认"而跳过|不因“免确认”而跳过/)
+  assert.match(skill, /成稿后的独立审读（逻辑与关系轴同一轮）不因"免确认"而跳过/)
+  assert.match(skill, /方案由主代理自查一遍/)
+  assert.doesNotMatch(skill, /方案先过 §4\.0 的关系轴审读/)
   // 6. "我没看懂"落在主线上按结构问题处理，不做句子级修补。
   assert.match(workflow, /作者的“我没看懂”是指令|作者的"我没看懂"是指令/)
   assert.match(skill, /作者说"我没看懂"是指令|作者说“我没看懂”是指令/)
