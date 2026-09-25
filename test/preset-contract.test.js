@@ -69,9 +69,7 @@ test('the dispatch budget caps new reviewers and mandates reuse', async () => {
   const workflow = await read(WORKFLOW)
   const skill = await read(SKILL)
   const composition = await read(COMPOSITION)
-  // 宿主的 maxActiveSubagents 默认 8，池满再派会被直接拒绝；四处常驻/必读文本
-  // 都必须把"6 位上限 + 复用原读者 + 先看在场读者"讲清楚，少一处就会退回
-  // "每版都新派一位"——v1.2.0 的实测档案里就是这么攒出 19 份报告的。
+  // 需要复核时复用原读者；纯文字小改不为走流程而新建读者。
   for (const [label, text] of [['审读面板', panel], ['共用写作流程', workflow], ['技能入口', skill], ['persona', composition]]) {
     assert.match(text, /不超过 6 位/, `${label} 必须写明新建审读子代理的上限`)
     assert.match(text, /send_message/, `${label} 必须要求复核走 send_message 复用原读者`)
@@ -87,39 +85,24 @@ test('the dispatch budget caps new reviewers and mandates reuse', async () => {
   assert.match(panel, /因额度未派 X，该项待审/)
   // 复用是默认动作，不是可选项。
   assert.match(panel, /复用是默认动作，不是省事的选择/)
-  assert.match(workflow, /“每版都派”不是“每版都新建”/)
+  assert.match(workflow, /纯措辞、标点小改不重跑/)
+  assert.match(panel, /纯措辞或标点修改无需逐次派发/)
+  assert.match(skill, /纯措辞、标点及不改变事实与阅读含义的局部润色由主代理回读/)
   assert.doesNotMatch(panel, /每版都派一位新读者/)
 })
 
-test('logic review and the relationship axis are one round, both after the draft', async () => {
+test('logic review and relationship evidence share the post-draft B2 pass', async () => {
   const panel = await read(PANEL)
   const workflow = await read(WORKFLOW)
   const skill = await read(SKILL)
-  const readme = await read('README.md')
-  const b2 = await read(`${REVIEWER_DIR}/b2-story-logic.md`)
-  // 关系轴不是另一次派发，也不是方案阶段的活：它和逻辑审读是同一位 B2 的同一轮，
-  // 都读已经落地的正文。方案阶段没有正文，判不出可信结论，所以不派独立读者。
-  assert.match(panel, /逻辑审读与关系轴是同一位 B2、同一轮、同一个时间/)
-  assert.match(panel, /方案阶段不派独立读者/)
-  assert.match(panel, /## 4\.0 关系轴审读（充分性测试，与逻辑审读同一轮，在完稿之后）/)
-  assert.match(panel, /它就在 B2 的常规轮次里/)
+  const b2 = await read(REVIEWER_DIR + '/b2-story-logic.md')
+  assert.match(panel, /关系轴不另派角色/)
+  assert.match(panel, /方案阶段独立审读/)
   assert.match(workflow, /所有独立审读都在完稿之后/)
-  assert.match(workflow, /关系轴（§4\.0）不是另一次派发，它就是 B2 那一轮的一部分/)
-  assert.match(workflow, /方案阶段不派读者/)
-  assert.match(skill, /它与逻辑审读是同一轮/)
-  assert.match(skill, /自查不算独立审读/)
-  assert.match(readme, /关系轴\*\*不另派\*\*/)
-  assert.match(b2, /这一节永远是对着正文做的/)
-  assert.match(b2, /缺少正文，关系轴无法核对/)
-  // 被取消的写法不能回来：方案阶段的独立派发、两个时机、无正文作答。
+  assert.match(skill, /有关系线时，B2/)
+  assert.match(b2, /关系轴与常规逻辑审读同轮完成/)
   assert.doesNotMatch(panel, /方案阶段（默认，必做，先于任何正文落地）/)
-  assert.doesNotMatch(panel, /跑在哪两个时机/)
-  assert.doesNotMatch(workflow, /方案先过 §4\.0，再动笔/)
-  assert.doesNotMatch(workflow, /分两个时机/)
-  assert.doesNotMatch(skill, /方案阶段一次、首次成稿后一次/)
-  assert.doesNotMatch(b2, /方案阶段必有一次/)
 })
-
 test('each review role owns its row: fixed persona plus a read-only tool filter', async () => {
   const composition = await read(COMPOSITION)
   for (const { file, tool } of ROLES) {
@@ -143,7 +126,9 @@ test('the flow entry, shared writing workflow and panel preserve reviewer reuse'
   for (const file of [PANEL, SKILL, WORKFLOW]) {
     const text = await read(file)
     assert.match(text, /send_message/, `${file} 必须说明改稿后的复核走 send_message`)
-    assert.match(text, /run_in_background: false/, `${file} 必须警告前台调用会退化成一次性会话`)
+    if (file === PANEL || file === WORKFLOW) {
+      assert.match(text, /run_in_background: false/, `${file} 必须警告前台调用会退化成一次性会话`)
+    }
   }
   const panel = await read(PANEL)
   assert.match(panel, /list_agents/)
@@ -153,15 +138,16 @@ test('the flow entry, shared writing workflow and panel preserve reviewer reuse'
   for (const { tool } of ROLES) assert.ok(panel.includes(tool), `面板的角色表必须列出 ${tool}`)
 })
 
-test('B3 and B4 carry observable dispatch conditions instead of a judgement call', async () => {
+test('specialist review follows the affected risk, not every final version', async () => {
   const panel = await read(PANEL)
   // v1.1.2 的写法是"场景顺序、篇幅或节奏需检查"——那句话对任何一篇都成立，
   // 于是条件恒真、角色从不触发。这里钉住换成可观测判据后的样子。
   assert.doesNotMatch(panel, /场景顺序、篇幅或节奏需检查/)
   assert.doesNotMatch(panel, /口吻、视角、叙述方式和句子需检查/)
-  assert.match(panel, /超过 5000 字/)
-  assert.match(panel, /作者对口吻、视角、叙述方式提过要求/)
-  assert.match(panel, /条件满足就派/)
+  assert.match(panel, /长篇幅、多场景、增删或调序场景/)
+  assert.match(panel, /作者有明确文风要求/)
+  assert.match(panel, /改动触及该状态链/)
+  assert.doesNotMatch(panel, /本轮是交付前的最后一版/)
   // 角色分工不能互相兼任，否则五个角色退化成同一个检查做五遍。
   assert.match(panel, /B5 不由 B2 兼任/)
   assert.match(panel, /B3 不由 B1 兼任/)
@@ -171,141 +157,46 @@ test('B3 and B4 carry observable dispatch conditions instead of a judgement call
   assert.doesNotMatch(panel, /你是故事逻辑审读员/)
 })
 
-test('the relationship axis is a first-class pass, not a by-product of consistency checks', async () => {
-  // 一次实测暴露的失效形态：五个角色的报告清单全在问"这里有没有矛盾"，
-  // 于是"这一跳有没有依据"没人问——一份处处自洽、主轴空心的稿子被当成
-  // "没有大结构问题"交付。下面几处一起构成那道缺口，缺一处就退回去。
+test('relationship review checks evidence without imposing a fixed romance formula', async () => {
   const panel = await read(PANEL)
   const workflow = await read(WORKFLOW)
+  const b2 = await read(REVIEWER_DIR + '/b2-story-logic.md')
+  assert.match(panel, /重要关系转折/)
+  assert.match(panel, /不要求“不可否认”的露出/)
+  assert.match(panel, /纯措辞小改无需重跑/)
+  assert.match(workflow, /不要求每一拍都有状态改变/)
+  assert.match(workflow, /允许感情含混/)
+  assert.match(b2, /不要强制双方对称地主动/)
+  assert.match(b2, /不预设 2000–4000 字篇幅/)
+})
+test('default writing skills keep optional examples out of the mandatory context', async () => {
   const skill = await read(SKILL)
-  const b2 = await read(`${REVIEWER_DIR}/b2-story-logic.md`)
-
-  // 1. 面板里必须有一节，把两类问题分开写，并点明它是 B2 的职责（不是新角色）。
-  assert.match(panel, /## 4\.0 关系轴审读/)
-  assert.match(panel, /一致性/)
-  assert.match(panel, /充分性/)
-  assert.match(panel, /所以关系轴\*\*由 B2 承担\*\*/)
-  // 落点只有成稿之后（v1.3.3 起）：逻辑与关系轴同一位、同一轮、同一个时间。
-  assert.match(panel, /与逻辑审读同一轮，在完稿之后/)
-  assert.match(panel, /逻辑审读与关系轴是同一位 B2、同一轮、同一个时间/)
-  assert.match(panel, /首次成稿后/)
-  assert.doesNotMatch(panel, /方案阶段（默认，必做，先于任何正文落地）/)
-  // 不接受概括结论。
-  assert.match(panel, /不接受“整体尚可”|不接受"整体尚可"/)
-  // 关系轴不能由另外四个角色兼任（它们的边界里都写着不管剧情因果）。
-  assert.match(panel, /关系轴不由 B1\/B3\/B4\/B5 兼任/)
-
-  // 2. "留白"这条护栏必须写明不适用于主轴——否则它会把唯一能报缺口的读者也堵死。
-  assert.match(panel, /不适用于主轴/)
-  assert.match(panel, /他动没动过心/)
-
-  // 3. B2 的人设里要有两组逐条引用的必答项，以及"全可否认 = 缺口"的判据。
-  assert.match(b2, /## 关系轴/)
-  assert.match(b2, /不可否认/)
-  assert.match(b2, /全部条目都可否认/)
-  // "有条目不可否认"不等于成立：盲测第三轮实测到这种更隐蔽的形态（15 条不可否认，但全压在关系变化之后）。
-  assert.match(b2, /还要看分布/)
-  assert.match(b2, /是不是回应/)
-  assert.match(b2, /他单独为对方做的/)
-  assert.match(b2, /该由谁在哪一拍主动一次/)
-  assert.match(b2, /推动者分布/)
-  assert.match(b2, /拒绝.*整体尚可|不接受“整体尚可”|不接受"整体尚可"/)
-  // 报告清单里必须有一个槽位点名这一节，否则它会退回成"可选补充"。
-  assert.match(b2, /\*\*关系轴四组问答\*\*/)
-  // 字数上限必须对关系轴放宽：实测两版都写到 3500+ 字，压字数会把必答项写空。
-  // 盲测里新版仍只写 1276 汉字并丢掉了逐条表格，所以这里钉的是"不受约束 + 保留逐条列表"。
-  assert.match(b2, /关系轴那一节不受 1200 字约束/)
-  assert.match(b2, /要保留逐条列表/)
-  assert.match(b2, /概括的关系轴结论等于没做这一节/)
-
-  // 4. 节拍表必须有"谁推动"，否则 B2 没有对照物可读。
-  assert.match(workflow, /关系轴：每一拍都要能回答/)
-  assert.match(workflow, /推动者/)
-  assert.match(workflow, /不改变任何一方状态的拍，是重复场景/)
-  assert.match(workflow, /不可否认/)
-  // 5. 关系轴那一次落点在成稿之后（v1.3.3 起不早于正文落地），且"免确认"不能跳过它。
-  assert.match(workflow, /### 4\.0 关系轴审读/)
-  assert.match(skill, /成稿后的独立审读（逻辑与关系轴同一轮）不因"免确认"而跳过/)
-  assert.match(skill, /方案由主代理自查一遍/)
-  assert.doesNotMatch(skill, /方案先过 §4\.0 的关系轴审读/)
-  // 6. "我没看懂"落在主线上按结构问题处理，不做句子级修补。
-  assert.match(workflow, /作者的“我没看懂”是指令|作者的"我没看懂"是指令/)
-  assert.match(skill, /作者说"我没看懂"是指令|作者说“我没看懂”是指令/)
-})
-
-test('关系轴的起点组：露出有据可引不等于起点有据可引', async () => {
-  // 第二次实测暴露的失效形态（v1.2.1）：v1.2.0 把"要没有露出"管住了，但没管
-  // "要从哪儿来"。一篇 17,900 字的稿子在关系轴跑了三轮、露出清单逐条引得到、
-  // 推动者分布也平衡的情况下，作者仍然读出"没有人味"——因为两个人的动心起点
-  // 都在开篇之前，正文只用叙述者的句子交代（"他没有理由去分辨，他分辨了"
-  // "我画你的手，是去年十月开始的"），没有一场戏交代为什么会看上这个人。
-  // 下面几处钉住新契约，缺一处就退回"清点露出"的老形态。
-  const panel = await read(PANEL)
-  const workflow = await read(WORKFLOW)
-  const b2 = await read(`${REVIEWER_DIR}/b2-story-logic.md`)
-
-  // 1. B2 必须有一组先做、且点名它管的是"要"的来路，不是"要"本身。
-  assert.match(b2, /### 第零组：想要从哪儿来/)
-  assert.match(b2, /双方都要答，被动的那一方也要答/)
-  // 判据必须是硬的：只有叙述者说得出的理由等于没有理由。
-  assert.match(b2, /只有叙述者说得出/)
-  // 不可替代性要能被检验（换一个对象还成立就不算）。
-  assert.match(b2, /可不可替代/)
-  assert.match(b2, /叙述者替它交代/)
-  // 缺的起点补在开篇之前，而不是就近补一句注。
-  assert.match(b2, /需在开篇前补一场/)
-  // 成稿后的回引必须单独做一次，不能拿第一组的条目充当证据。
-  assert.match(b2, /答不了"他为什么会动心"|答不了“他为什么会动心”/)
-
-  // 2. "留白"这条护栏要同时管住两种滥用：不能拿它放过"有没有"，也不能拿它放过"为什么"。
-  assert.match(b2, /"为什么是这个人"不能|“为什么是这个人”不能/)
-  assert.match(panel, /"为什么是这个人"不能|“为什么是这个人”不能/)
-  assert.match(panel, /"要"没有起点|“要”没有起点/)
-  // 面板的成稿时机也要点名起点单独回引。
-  assert.match(panel, /第零组的起点与由来单独回引一次/)
-
-  // 3. 规划阶段必须为两边各写一条起点，并写明它不能只靠职务或身份。
-  assert.match(workflow, /起点：两个人的动心各有各的来路/)
-  assert.match(workflow, /注意起点/)
-  assert.match(workflow, /不能只依赖职务或身份/)
-  assert.match(workflow, /不可替代/)
-  assert.match(workflow, /补在开篇之前/)
-  // 人物卡里"动机"（当下要什么）不能顶替起点（这份要的来路）。
-  assert.match(workflow, /两者不能互相顶替/)
-  // 方案阶段的 §4.0 必答项要含起点，成稿后第一次也核它。
-  assert.match(workflow, /为什么只对这个人成立/)
-  assert.match(workflow, /双方起点.*是否真的落在文本上|是否真的落在文本上/)
-
-  // 4. 报告清单里的槽位数量必须跟着改，否则起点组会退回"可选补充"。
-  assert.match(b2, /\*\*关系轴四组问答\*\*/)
-})
-
-test('dialogue function and character knowledge are checked, not just line shape', async () => {
-  // 实测的第二种失效：全篇台词每句都在交付信息或下判词，读起来像双方在念台词；
-  // 同时"看穿"的能力没有依据，被作者读成上帝视角。lint 的七条规则全是字面形状，
-  // 一条也测不到这个——所以判据必须落在规划与 B2 的必答项里。
-  const workflow = await read(WORKFLOW)
-  const b2 = await read(`${REVIEWER_DIR}/b2-story-logic.md`)
-  const panel = await read(PANEL)
   const contract = await read('skills/writing-style-contract/SKILL.md')
-
-  // 规划阶段为"无功能交流"留位置（契约第四节列了形式，但成稿里常常一个都没落地）。
-  assert.match(workflow, /台词的功能分布/)
-  assert.match(workflow, /无功能/)
-  assert.match(contract, /随口附和、确认听清、自我纠正、绕开问题/)
-  // 看穿要单向向下、且当场有证据。
-  assert.match(workflow, /单向、向下/)
-  assert.match(workflow, /地位更低或更被动/)
-  // B2 的第三组必答项：抄不出依据就是缺口，并给出可照抄的对照。
-  assert.match(b2, /第三组：谁比读者先知道/)
-  assert.match(b2, /抄不出依据的，报缺口/)
-  assert.match(b2, /你站得太近了/)
-  assert.match(b2, /你心事太重/)
-  // 这一组必须与 B4 的视角检查划清界限，否则两边互相让。
-  assert.match(b2, /它不是视角问题/)
-  assert.match(panel, /上帝视角|比读者先知道/)
+  const examples = await read('skills/writing-style-contract/references/style-examples.md')
+  assert.ok(skill.length + contract.length < 8500)
+  assert.match(contract, /references\/style-examples\.md/)
+  assert.match(examples, /## 十四、写法示例/)
+  assert.doesNotMatch(contract, /### 9\. 一段日常可以没有待兑现的细节/)
 })
 
+test('approximate word targets are guidance unless the author sets a hard limit', async () => {
+  for (const file of [SKILL, WORKFLOW, REVIEWER_DIR + '/b2-story-logic.md']) {
+    const source = await read(file)
+    assert.match(source, /±15%/, `${file} 应允许近似目标浮动`)
+    assert.match(source, /精确字数/, `${file} 应保留作者的精确字数要求`)
+  }
+})
+
+test('dialogue and character knowledge remain contextual checks', async () => {
+  const workflow = await read(WORKFLOW)
+  const b2 = await read(REVIEWER_DIR + '/b2-story-logic.md')
+  const contract = await read('skills/writing-style-contract/SKILL.md')
+  assert.match(workflow, /对话可以有闲谈，也可以直接而紧凑/)
+  assert.match(b2, /年龄、身份或地位本身不能证明其判断不可信/)
+  assert.match(contract, /随口附和、确认听清、自我纠正、绕开问题/)
+  assert.match(b2, /信息来源与动机/)
+  assert.doesNotMatch(workflow, /每场至少要有一处“无功能”交流/)
+})
 test('the persona stays identity-only and the review conditions live in the panel', async () => {
   const composition = await read(COMPOSITION)
   const persona = composition.match(/prefix: \|-\r?\n([\s\S]*?)\r?\n\s*- id: agent-instructions/)?.[1] ?? ''
@@ -314,9 +205,9 @@ test('the persona stays identity-only and the review conditions live in the pane
   assert.doesNotMatch(persona, /ask_user_question/)
   assert.doesNotMatch(persona, /人物卡和节拍/)
   assert.doesNotMatch(persona, /静默|缓存/)
-  // 但"角色池存在、触发条件在面板里"这条指路必须留在常驻上下文里。
+  // 常驻文本只提示角色池与按需读取面板。
   assert.match(persona, /subagent_review_/)
-  assert.match(persona, /触发条件见面板/)
+  assert.match(persona, /准备派发独立审读时再读/)
 })
 
 test('story_lint is documented as a self-check tool, not a review input', async () => {

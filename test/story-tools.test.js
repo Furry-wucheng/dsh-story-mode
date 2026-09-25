@@ -116,12 +116,12 @@ test('length bands use the author-selected ranges at their boundaries', async ()
     const h = harness()
     for (const length of [min, max]) {
       h.files.set('draft.md', '甲'.repeat(length))
-      assert.doesNotMatch(await h.run('story_wordcount', { tier }), /低于「|超过「/)
+      assert.doesNotMatch(await h.run('story_wordcount', { tier }), /参考下限|参考上限/)
     }
     h.files.set('draft.md', '甲'.repeat(min - 1))
-    assert.match(await h.run('story_wordcount', { tier }), /还差 1 字/)
+    assert.match(await h.run('story_wordcount', { tier }), /参考下限.*少 1 字；档位仅供参考/)
     h.files.set('draft.md', '甲'.repeat(max + 1))
-    assert.match(await h.run('story_wordcount', { tier }), /超出 1 字/)
+    assert.match(await h.run('story_wordcount', { tier }), /参考上限.*多 1 字；档位仅供参考/)
   }
 })
 
