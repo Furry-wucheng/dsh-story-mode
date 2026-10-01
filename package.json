@@ -1,6 +1,6 @@
 {
   "name": "dsh-story-mode",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "DSH 短篇小说模式（DeepSeek Harness 0.1.7-rc.1 及以后）：一个包内含两个 agent preset —— 完整版（五位角色化只读审读员）与精简版（一位合并审读员，一次读完五个维度，工具面与每轮前缀更窄）——外加写作流程技能、文风契约技能与四个结构化工具。一条命令安装，卸载即拔。",
   "type": "module",
   "main": "lib/index.js",

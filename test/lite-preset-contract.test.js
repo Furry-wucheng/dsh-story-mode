@@ -40,8 +40,8 @@ const REQUIRED_GROUP_ROWS = ['compaction-basic', 'command-compact', 'tool-result
  */
 const CONTRACT_FINGERPRINTS = [
   '# 文风契约',
+  '## 〇、动笔前先匹配文风',
   '## 一、默认叙事风格',
-  '这是作者没有另行指定时的默认写法',
   '不以词语命中或删除比例判定合格',
 ]
 

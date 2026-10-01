@@ -179,6 +179,30 @@ test('default writing skills keep optional examples out of the mandatory context
   assert.doesNotMatch(contract, /### 9\. 一段日常可以没有待兑现的细节/)
 })
 
+test('style matching happens before drafting in both modes and stays a judgement', async () => {
+  const contract = await read('skills/writing-style-contract/SKILL.md')
+  const skill = await read(SKILL)
+  const lite = await read('skills-lite/short-story-lite/SKILL.md')
+  const workflow = await read(WORKFLOW)
+  // 匹配是动笔前的一步：两个模式的入口和共用流程都要接上。
+  for (const file of [skill, lite, workflow]) {
+    assert.match(file, /契约 §〇/, `${file} 必须把文风匹配接进接稿流程`)
+  }
+  // 不查表：由主代理自己判断，中外、纯文学与类型/网文都在范围内。
+  assert.match(contract, /## 〇、动笔前先匹配文风/)
+  assert.match(contract, /自己判断，不查表/)
+  assert.match(contract, /网文作者/)
+  // 匹配不落成条目：拆成执行特征、写成"以某人的口吻写"，都是被明确否掉的形态。
+  assert.match(contract, /不用把风格拆成执行特征/)
+  assert.match(contract, /以某人的口吻写/)
+  assert.doesNotMatch(contract, /执行特征：/)
+  // 选中风格优先于默认基准，审读员要拿得到它。
+  assert.match(contract, /作者当前要求 → §〇 匹配到的风格 → 这里的默认写法/)
+  for (const file of [REVIEWER_DIR + '/b4-style-execution.md', PANEL, 'skills-lite/references/reviewer-merged.md']) {
+    assert.match(await read(file), /本次文风匹配/, `${file} 必须说明本次匹配到的文风参与判断`)
+  }
+})
+
 test('approximate word targets are guidance unless the author sets a hard limit', async () => {
   for (const file of [SKILL, WORKFLOW, REVIEWER_DIR + '/b2-story-logic.md']) {
     const source = await read(file)
