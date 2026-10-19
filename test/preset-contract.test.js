@@ -27,6 +27,43 @@ const ROLES = [
   { role: 'b5', file: 'b5-physical-continuity.md', tool: 'subagent_review_b5' },
 ]
 
+/**
+ * 从补丁里切出指定缩进层级的 `- id:` 块（含它的 config 子行）。
+ *
+ * 0.2.1 的一份补丁插入了 6 行 preset 声明，每行各带一棵子树；断言必须落在**那一行
+ * 自己**身上（"完整版审读员仍带编辑器"这种旧判据，现在要靠"这个 preset 里没有编辑器"
+ * 来表达）。按缩进切块是这里最小、也最不容易把别的行算进来的办法。
+ */
+function blocksAt(text, indent) {
+  const found = new Map()
+  const startPattern = new RegExp(`^ {${indent}}- id: (\\S+)\\s*$`)
+  const lines = text.split(/\r?\n/)
+  let current = null
+  for (const line of lines) {
+    const start = line.match(startPattern)
+    if (start !== null) {
+      current = { id: start[1], lines: [line] }
+      found.set(start[1], current)
+      continue
+    }
+    const leading = line.length - line.trimStart().length
+    if (line.trimStart().startsWith('- ') && leading <= indent) {
+      current = null
+      continue
+    }
+    if (current !== null) current.lines.push(line)
+  }
+  return found
+}
+
+/** 取一份缩进层级的块内容；缺了就报出那个 id 的声明行少了。 */
+function blockText(text, indent, id) {
+  const block = blocksAt(text, indent).get(id)
+  assert.ok(block, `组合里缺了 ${id} 这一行`)
+  return block.lines.join('\n')
+}
+
+
 test('the patch inserts its own preset declaration row instead of touching an official row', async () => {
   const patch = await read(COMPOSITION)
   // 0.1.7 起 `agent-presets` 这一行不存在了：注册表不扫描目录，preset 是普通行。
@@ -53,11 +90,17 @@ test('the plugin row resolves by bare package name, never by path or expression'
   assert.doesNotMatch(patch, /file:\/\//)
 })
 
-test('reviewers are persistent subagents: continuable spawn plus send_message control', async () => {
+test('reviewers are independent read-only presets: agentPreset tools plus send_message control', async () => {
   const composition = await read(COMPOSITION)
+  // 0.2.1：孩子的人设与工具面必须写在一个**命名的 agent preset** 里，工具行只写
+  // provider / toolName / agentPreset。旧版的 persona / toolFilter / backgroundMode
+  // 两项硬报错、一项静默失效，所以一个都不许留。
   assert.match(composition, /name:\s*'@deepseek-ai\/dsh-tool-subagent'/)
-  assert.match(composition, /backgroundMode:\s*continuable/)
-  assert.doesNotMatch(composition, /backgroundMode:\s*one-shot/)
+  for (const { role } of ROLES) {
+    assert.match(composition, new RegExp(`agentPreset: story-review-${role}\\b`), `${role} 的工具行必须指到它自己的只读 preset`)
+  }
+  assert.doesNotMatch(composition, /toolFilter\s*:/, '0.2.1 没有 toolFilter：只读由审读员 preset 里挂什么决定')
+  assert.doesNotMatch(composition, /backgroundMode\s*:/, '0.2.1 没有 backgroundMode：每次派发都是后台受管 activation')
   assert.match(composition, /name:\s*'@deepseek-ai\/dsh-tool-subagent-control'/)
   assert.match(composition, /name:\s*'@deepseek-ai\/dsh-tool-subagent-control\/list-agents'/)
   // fork 会把主代理的大纲与写作推理一起复制给读者，审读独立性就没了。
@@ -103,32 +146,57 @@ test('logic review and relationship evidence share the post-draft B2 pass', asyn
   assert.match(b2, /关系轴与常规逻辑审读同轮完成/)
   assert.doesNotMatch(panel, /方案阶段（默认，必做，先于任何正文落地）/)
 })
-test('each review role owns its row: fixed persona plus a read-only tool filter', async () => {
+test('each review role owns its preset and tool row: own persona file, read-only combination', async () => {
   const composition = await read(COMPOSITION)
-  for (const { file, tool } of ROLES) {
-    assert.match(composition, new RegExp(`toolName: ${tool}\\b`), `${tool} 必须有自己的工具行`)
-    // persona 必须由那一行自己从角色文件读出：真装配的等价物在
+  const presetRows = blocksAt(composition, 4)
+  const mainAt = composition.indexOf('    - id: preset-short-story\n')
+  for (const [index, { role, file, tool }] of ROLES.entries()) {
+    const presetRowId = `preset-short-story-review-${role}`
+    const presetId = `story-review-${role}`
+    assert.ok(presetRows.has(presetRowId), `${presetRowId} 必须是一行独立的 preset 声明`)
+    // 顺序是硬契约：tool-subagent 在挂载时校验 agentPreset 指向的声明已经注册。
+    assert.ok(composition.indexOf(`    - id: ${presetRowId}\n`) < mainAt, `${presetRowId} 必须排在主模式行之前`)
+    const preset = blockText(composition, 4, presetRowId)
+    assert.match(preset, new RegExp(`^ {8}id: ${presetId}$`, 'm'), 'config.id 是工具行 agentPreset 的目标')
+    assert.match(preset, new RegExp(`^ {8}order: 10${index + 1}$`, 'm'), `${presetId} 的 order 应为 10${index + 1}`)
+
+    // persona 必须由那个 preset 自己从角色文件读出：真装配的等价物在
     // scripts/verify-composition.mjs（它会在临时解析环境里求值，并与角色文件**逐字比对**）。
-    const persona = composition.match(new RegExp(`toolName: ${tool}[\\s\\S]*?persona: !!js "([^"]+)"`))
-    assert.ok(persona, `${tool} 必须用 !!js 从角色人设文件读 persona`)
-    assert.ok(persona[1].includes(`reviewers/${file}`), `${tool} 的 persona 必须指向 ${file}`)
+    const persona = preset.match(/prefix: !!js "([^"]+)"/)
+    assert.ok(persona, `${presetRowId} 必须用 !!js 从角色人设文件读 persona`)
+    assert.ok(persona[1].includes(`reviewers/${file}`), `${presetRowId} 的 persona 必须指向 ${file}`)
     assert.ok((await read(`${REVIEWER_DIR}/${file}`)).trim().length > 0, `${file} 不能为空`)
+
+    // 只读工具面 = 三行；写入、编辑、交付、委派、技能、压缩工具**根本没挂载**。
+    const readerRows = blocksAt(preset, 10)
+    assert.deepEqual([...readerRows.keys()], ['persona', 'tool-fs', 'tool-fs-search'],
+      `${presetId} 的只读组合只能是 persona + tool-fs + tool-fs-search`)
+    assert.doesNotMatch(preset, /tool-str-replace-editor|tool-present|tool-skill|tool-subagent|tool-ask-user|compaction/,
+      `${presetId} 里多挂了不属于只读组合的行`)
+    const fsConfig = blockText(preset, 10, 'tool-fs')
+    assert.match(fsConfig, /read: true/)
+    assert.match(fsConfig, /readImage: true/)
+    assert.match(fsConfig, /write: false/, 'write 关掉才叫只读：不写就是默认 true')
+    assert.match(fsConfig, /edit: false/, 'edit 关掉才叫只读：不写就是默认 true')
+    assert.match(blockText(preset, 10, 'tool-fs-search'), /sampleOverCapGlobResults: false/)
+
+    // 工具行：provider/toolName/agentPreset 三个字段，且没有 0.1.7 的遗留。
+    const toolRow = blockText(composition, 10, `tool-subagent-review-${role}`)
+    assert.match(toolRow, new RegExp(`toolName: ${tool}\\b`), `${tool} 必须有自己的工具行`)
+    assert.match(toolRow, /provider: spawn/, 'spawn 后端才能零继承上下文地冷读')
+    assert.match(toolRow, new RegExp(`agentPreset: ${presetId}\\b`), `${tool} 必须指到 ${presetId}`)
+    assert.doesNotMatch(toolRow, /persona:|toolFilter:|backgroundMode:|allow:|deny:/,
+      `${tool} 的工具行只写 provider/toolName/agentPreset`)
   }
-  // 只在角色行上限制工具：allow 只列读类工具，deny 拿掉写入与再委派。
-  const filters = composition.match(/toolFilter:/g) ?? []
-  assert.equal(filters.length, ROLES.length, '每个角色行各有一个 toolFilter')
-  assert.equal((composition.match(/allow: \[read, read_image, str_replace_editor, glob, grep\]/g) ?? []).length, ROLES.length)
-  assert.equal((composition.match(/deny: \[write, edit, present, subagent, send_message, interrupt_agent, list_agents\]/g) ?? []).length, ROLES.length)
-  assert.doesNotMatch(composition, /backgroundMode:\s*one-shot/)
 })
 
 test('the flow entry, shared writing workflow and panel preserve reviewer reuse', async () => {
   for (const file of [PANEL, SKILL, WORKFLOW]) {
     const text = await read(file)
     assert.match(text, /send_message/, `${file} 必须说明改稿后的复核走 send_message`)
-    if (file === PANEL || file === WORKFLOW) {
-      assert.match(text, /run_in_background: false/, `${file} 必须警告前台调用会退化成一次性会话`)
-    }
+    // 0.2.1 的派发语义：每次调用立即返回 childId，没有 run_in_background 这个参数。
+    assert.match(text, /childId/, `${file} 必须说明每次派发都会拿到可复用的 childId`)
+    assert.doesNotMatch(text, /run_in_background/, `${file} 不该再提 run_in_background（0.2.x 没有这个参数）`)
   }
   const panel = await read(PANEL)
   assert.match(panel, /list_agents/)
@@ -326,7 +394,21 @@ function cleanReport(overrides = {}) {
       riskyScalars: [],
       hasLineComment: false,
       customSkillDirs: true,
-      reviewerRows: {},
+      // 0.2.1 的审读员契约：每位角色 = 只读 preset + 主模式里指过去的工具行。
+      // 渲染器读 reviewersOk / reviewerOrderOk / delegationWired / staleFields；
+      // 少了它们，"一切正常"的断言会落在没被校验过的默认值上。
+      reviewers: {
+        b1: { presetRow: true, agentPreset: true, stale: [] },
+        b2: { presetRow: true, agentPreset: true, stale: [] },
+        b3: { presetRow: true, agentPreset: true, stale: [] },
+        b4: { presetRow: true, agentPreset: true, stale: [] },
+        b5: { presetRow: true, agentPreset: true, stale: [] },
+      },
+      reviewersOk: true,
+      reviewerOrderOk: true,
+      delegationWired: true,
+      genericSubagentOk: true,
+      staleFields: [],
       reusable: true,
     },
     packageFiles: {
@@ -419,7 +501,7 @@ test('doctor reports missing skills and reviewers instead of a healthy installat
   }))
   assert.match(report, /包内缺少写作技能的 references\/writing-workflow\.md/)
   assert.match(report, /包内缺少审读角色人设文件/)
-  assert.match(report, /审读角色没有各自成行/)
+  assert.match(report, /审读角色没有各自的只读 preset/)
   assert.match(report, /本作用域里技能不齐/)
   assert.match(report, /本作用域里 story_\* 工具只有 1 个/)
   assert.doesNotMatch(report, /一切正常/)

@@ -66,6 +66,24 @@ function normalise(block) {
   return block.lines.map((line) => line.slice(block.indent)).join('\n')
 }
 
+/**
+ * 切出一行 preset 声明的**整棵子树**（声明行 + `config.plugins` 里的子行）。
+ *
+ * `rows()` 把每个 `- id:` 都当成新块，所以它读不到某个声明行底下的子行——而审读员的
+ * 只读组合恰好全在子行里。这里按缩进归属整块：下一个缩进 ≤ 4 的条目才是下一行声明。
+ */
+function presetBlock(text, rowId) {
+  const lines = text.split(/\r?\n/)
+  const start = lines.findIndex((line) => line === `    - id: ${rowId}`)
+  if (start < 0) return null
+  const collected = []
+  for (let index = start; index < lines.length; index += 1) {
+    if (index > start && /^ {4}- /.test(lines[index])) break
+    collected.push(lines[index])
+  }
+  return collected.join('\n')
+}
+
 /** 漂移就报出**行 id 与两份块**：光说"不一致"没法定位是哪一层需要跟着改。 */
 function assertSameRow(id, fullRows, liteRows) {
   const full = fullRows.get(id)
@@ -106,21 +124,83 @@ test('the compaction group and its pruner thresholds are shared without drift', 
   }
 })
 
-test('the split left the full preset intact: no lite text, five reviewers, web and goal kept', async () => {
+test('the split left the full preset intact: no lite text, six declarations, web and goal kept', async () => {
   const full = await read(FULL)
   // 另起一个文件的唯一承诺就是"原文件不动、它的验证不动"，所以这条要能独立失败。
   assert.doesNotMatch(full, /short-story-lite/)
   assert.doesNotMatch(full, /lite/i, '完整版那一层不该出现任何 lite 字样')
   assert.equal((full.match(/^- insert:[ \t]*$/gm) ?? []).length, 1)
-  assert.equal((full.match(/^ {4}- id: /gm) ?? []).length, 1)
+  // 0.2.1：五条审读员声明 + 一条主模式声明。
+  assert.equal((full.match(/^ {4}- id: /gm) ?? []).length, 6, 'insert 里应有 5 个审读员 + 1 个主模式')
+  for (const role of ['b1', 'b2', 'b3', 'b4', 'b5']) {
+    assert.match(full, new RegExp(`^ {4}- id: preset-short-story-review-${role}$`, 'm'), `缺了 ${role} 的只读 preset 声明`)
+    assert.match(full, new RegExp(`^ {8}id: story-review-${role}$`, 'm'), `缺了 story-review-${role} 的 config.id`)
+  }
   // 五位角色化审读员一位都不能少，也不能变成合并的那一位。
   const reviewerTools = [...full.matchAll(/toolName: (subagent_review\w*)/g)].map((match) => match[1])
   assert.deepEqual(reviewerTools, ['subagent_review_b1', 'subagent_review_b2', 'subagent_review_b3', 'subagent_review_b4', 'subagent_review_b5'])
   for (const id of ['tool-web', 'tool-goal']) {
     assert.match(full, new RegExp(`^\\s*- id: ${id}$`, 'm'), `完整版里不该少了 ${id}`)
   }
-  assert.equal((full.match(/toolFilter:/g) ?? []).length, 5, '每个角色行各有一个 toolFilter')
-  assert.match(full, /^\s*allow: \[read, read_image, str_replace_editor, glob, grep\]$/m, '完整版的审读员仍带着编辑器（这是它自己的取舍）')
+  // 0.1.7 的三个配置项在完整版里也要清零：persona/toolFilter 会让挂载抛错，backgroundMode 静默失效。
+  assert.doesNotMatch(full, /toolFilter\s*:/, '0.2.1 没有 toolFilter：只读由审读员 preset 的组合保证')
+  assert.doesNotMatch(full, /backgroundMode\s*:/, '0.2.1 没有 backgroundMode：每次派发都是后台 activation')
+  assert.doesNotMatch(full, /^\s*persona:\s*!!js/m, 'persona 只能作为独立插件行出现，不能挂在工具行上')
+  // 审读员 preset 里只有只读组合：编辑器、写/编辑开关、交付、委派、技能、压缩都不该出现。
+  const fullRows = rows(full)
+  for (const role of ['b1', 'b2', 'b3', 'b4', 'b5']) {
+    const block = presetBlock(full, `preset-short-story-review-${role}`)
+    assert.ok(block !== null, `缺了 ${role} 的只读 preset`)
+    assert.match(block, /name: '@deepseek-ai\/dsh-persona'/, `${role} 的人设挂在它自己的 preset 里`)
+    assert.doesNotMatch(block, /tool-str-replace-editor|tool-present|tool-skill|tool-subagent|compaction/,
+      `${role} 的 preset 里出现了不属于只读组合的行`)
+    assert.match(block, /write: false/, `${role} 的 tool-fs 必须显式关掉 write`)
+    assert.match(block, /edit: false/, `${role} 的 tool-fs 必须显式关掉 edit`)
+    assert.match(block, /sampleOverCapGlobResults: false/, `${role} 的 tool-fs-search 必须有必填项`)
+    // 工具行只写 provider/toolName/agentPreset，并指回这个 preset。
+    const toolRow = fullRows.get(`tool-subagent-review-${role}`)
+    assert.ok(toolRow, `缺了 ${role} 的工具行`)
+    const toolBlock = toolRow.lines.join('\n')
+    assert.match(toolBlock, new RegExp(`agentPreset: story-review-${role}\\b`), `${role} 的工具行必须指到自己的只读 preset`)
+    assert.doesNotMatch(toolBlock, /persona:|toolFilter:|backgroundMode:/, `${role} 的工具行只写 provider/toolName/agentPreset`)
+  }
+})
+
+test('both layers declare reviewer presets before the main preset and wire them with agentPreset', async () => {
+  // 顺序是 0.2.1 的硬契约：`tool-subagent` 在挂载时校验 agentPreset 指向的声明已经注册，
+  // 审读员声明排在主模式之后会让整层 broken（模式在选择器里红着、切不进去）。
+  const cases = [
+    {
+      label: FULL,
+      text: await read(FULL),
+      mainRowId: 'preset-short-story',
+      reviewerRowIds: ['preset-short-story-review-b1', 'preset-short-story-review-b2', 'preset-short-story-review-b3',
+        'preset-short-story-review-b4', 'preset-short-story-review-b5'],
+      presetIds: ['story-review-b1', 'story-review-b2', 'story-review-b3', 'story-review-b4', 'story-review-b5'],
+    },
+    {
+      label: LITE,
+      text: await read(LITE),
+      mainRowId: 'preset-short-story-lite',
+      reviewerRowIds: ['preset-short-story-review-merged'],
+      presetIds: ['story-review-merged'],
+    },
+  ]
+  for (const item of cases) {
+    const mainAt = item.text.search(new RegExp(`^ {4}- id: ${item.mainRowId}$`, 'm'))
+    assert.ok(mainAt >= 0, `${item.label} 里缺了主模式声明 ${item.mainRowId}`)
+    assert.doesNotMatch(item.text, /toolFilter\s*:/, `${item.label} 里还有 toolFilter`)
+    assert.doesNotMatch(item.text, /backgroundMode\s*:/, `${item.label} 里还有 backgroundMode`)
+    let previousAt = -1
+    for (const [index, rowId] of item.reviewerRowIds.entries()) {
+      const at = item.text.search(new RegExp(`^ {4}- id: ${rowId}$`, 'm'))
+      assert.ok(at >= 0, `${item.label} 里缺了 ${rowId}`)
+      assert.ok(at < mainAt, `${item.label}：${rowId} 必须排在主模式 ${item.mainRowId} 之前`)
+      assert.ok(at > previousAt, `${item.label}：审读员声明行的顺序固定，${rowId} 排错了`)
+      previousAt = at
+      assert.match(item.text, new RegExp(`agentPreset: ${item.presetIds[index]}\\b`), `${item.label}：缺少指向 ${item.presetIds[index]} 的工具行`)
+    }
+  }
 })
 
 test('the manifest ships both patch layers and the lite skills in the tarball', async () => {

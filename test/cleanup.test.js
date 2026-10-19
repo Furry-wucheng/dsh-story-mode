@@ -130,6 +130,46 @@ test('the lite preset is cleared too: selecting it as default cannot strand the 
   }
 })
 
+test('the reviewer presets are cleared too: they appear in the selector and can be defaulted', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-story-test-'))
+  try {
+    const dir = join(root, 'profiles', 'desktop')
+    await mkdir(dir, { recursive: true })
+    // 0.2.1 起审读员也是独立的 preset 声明，而注册表没有隐藏字段：它们会出现在模式
+    // 选择器里，用户可能把「短篇审读员 B3」设成默认。少认这个 id 的话，卸载后同样是
+    // 不可恢复的 agent-preset/not-found。
+    const patch = [
+      '- id: agent-preset-registry',
+      '  config:',
+      '    default: standard',
+      '    selectedDefault: story-review-b3',
+      '',
+    ].join('\n')
+    await writeFile(join(dir, 'cordis.patch.yml'), patch)
+    const run = (command) => spawnSync(process.execPath, [cli, command, '--dsh-home', root], { encoding: 'utf8' })
+
+    const checked = run('check')
+    assert.equal(checked.status, 1, checked.stderr)
+    assert.match(checked.stdout, /selectedDefault = story-review-b3/)
+    assert.equal(await readFile(join(dir, 'cordis.patch.yml'), 'utf8'), patch, '--check 不改文件')
+
+    const cleaned = run('cleanup')
+    assert.equal(cleaned.status, 0, cleaned.stderr)
+    assert.equal(await readFile(join(dir, 'cordis.patch.yml'), 'utf8'), [
+      '- id: agent-preset-registry',
+      '  config:',
+      '    default: standard',
+      '',
+    ].join('\n'))
+    assert.equal(run('check').status, 0)
+  } finally {
+    const target = await realpath(root)
+    const parent = await realpath(resolve(tmpdir()))
+    assert.ok(target.startsWith(parent + sep), 'cleanup restricted to this test temporary directory')
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test('a default that names neither writing preset is left alone', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-story-test-'))
   try {

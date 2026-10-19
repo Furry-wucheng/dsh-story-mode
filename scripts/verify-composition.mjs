@@ -1,40 +1,58 @@
 /**
  * 组合自检：把本包的 bundle 补丁当成 loader 那样读一遍。
  *
- * 本包有**两层补丁、两个 preset**：`cordis.patch.yml`（完整版，五位角色化审读员）与
+ * 面向 DSH 0.2.1-rc.1 及以后（在 0.2.1-rc.2 上实测）。
+ *
+ * 本包有**两层补丁、两个主模式**：`cordis.patch.yml`（完整版，五位角色化审读员）与
  * `cordis.lite.patch.yml`（精简版，一位合并审读员）。同一个脚本用 `--preset` 切档验证两者，
  * **检查逻辑一份都不复制**——两个档位的全部差异收在下面的 `PROFILES` 表里。所以"精简版也
  * 同等严格"不是靠补一套精简版检查换来的，而是同一套检查换一组期望值。
  *
- * 0.1.7 之前这个文件读的是 `presets/short-story/agent.cordis.yml`；现在 preset 是**普通的
- * loader 行**，由本包的补丁插进 profile 的组合里，所以自检对象换成了补丁文件本身：
- * `- insert:` → preset 声明行（`@deepseek-ai/dsh-agent-preset`）→ 那一行的
- * `config.plugins` 才是模式全部的子插件行。
+ * 0.2.1 换代的地方：`@deepseek-ai/dsh-tool-subagent` 删掉了 `persona` / `toolFilter` /
+ * `backgroundMode`（前两项是**硬报错**）。孩子的人设与工具面必须写在一个**命名的 agent
+ * preset** 里，调度工具行只写 `agentPreset: <preset id>`；每次派发都是后台受管 activation，
+ * 立即返回 childId，没有 `run_in_background` 参数。所以每份补丁插入的是**若干行 preset
+ * 声明**，顺序固定：
  *
- * 它回答的不是"文件能不能解析"，而是六个**只在装配时才会暴露**的问题：
+ *   `- insert:` → 审读员 preset 声明行（只读组合）… → 主模式 preset 声明行
+ *
+ * 主模式的 `config.plugins` 是模式的全部子插件；每个审读员声明行的 `config.plugins` 是
+ * 那个角色的**完整工具面**（只挂 persona + tool-fs + tool-fs-search）。审读员的只读不再
+ * 靠 `toolFilter` 名单，而是靠"写/编辑/交付/委派/技能/压缩工具根本没挂载"。
+ *
+ * 它回答的不是"文件能不能解析"，而是这些**只在装配时才会暴露**的问题：
  *   1. 每行的 `!!js` 能不能**编译**——语法错误要等到那一行挂载时才炸，而那一炸的表现
  *      是 preset 在 roster 里变成 broken、模式静默消失；
  *   2. `!!js` 里的值有没有被 YAML 转义改写（`'\n'` 在双引号标量里会变成真换行）；
  *   3. 双引号标量里有没有反斜杠转义（同一个坑的预防性检查）；
- *   4. 每行的 `config` 能不能过插件自己的 Config schema；
- *   5. `toolFilter` 点名的工具是不是本组合真实注册过的（名字错了会在子代理创建窗口抛错
- *      ＝那次派发直接失败）；
- *   6. 审读员有没有被误授权写文件、呈现或再委派，人设是不是真来自它自己的文件，
+ *   4. 每行的 `config` 能不能过插件自己的 Config schema——审读员声明行与工具行都在内；
+ *   5. **顺序**：审读员声明行必须排在主模式行之前——`tool-subagent` 在挂载时就校验
+ *      `agentPreset` 指向的声明已经注册，倒序会让主模式整行 broken；
+ *   6. **只读是组合保证的**：审读员 preset 里只有 persona + tool-fs（read/readImage 开、
+ *      write/edit 关）+ tool-fs-search；挂回任何写/编辑/交付/委派/技能/压缩行都要报错；
+ *   7. **agentPreset 指得到**：工具行的 `agentPreset` 必须等于某个已声明审读员 preset 的
+ *      `config.id`；漏写就等于孩子继承主模式（拿到写文件与再委派）——这是本机制最危险的
+ *      回归，因为它在装配时不报错、只让审读员悄悄拿到全部工具；
+ *   8. **0.1.7 遗留字段为零**：整份补丁的 YAML 里不得出现 `toolFilter:` /
+ *      `backgroundMode:`，`tool-subagent` 行不得带 `persona:`——前两项会让挂载失败或
+ *      静默失效，后者是 0.2.1 的硬报错；
+ *   9. 审读员人设是不是真来自它自己的文件（B4/合并那位还要按顺序拼上文风契约），
  *      以及这个补丁在**别的机器上**还装不装得上（行长不被插值、包内路径一律运行时解析）。
  *
  * 用法：node scripts/verify-composition.mjs [--preset <full|lite>] [--composition <file>]
  *   `--preset full`（默认）检 `cordis.patch.yml`，`--preset lite` 检 `cordis.lite.patch.yml`。
- * 退出码 0 = 全过；1 = 有失败项（打印到 stderr）。
- * **档位必须显式给，脚本绝不按文件内容猜档**：两个 preset 的 id／order／技能根／审读员
- * 工具名都不一样，猜档等于让校验器跟着被检对象走——把精简版的审读员行删光，也可能被
- * "猜"成完整版之后报通过。默认 full 只是为了让仓库日常那条命令（`npm run verify:full`）
- * 不必带参数；`npm run verify:lite` 走的是 `--preset lite`。
+ *   退出码 0 = 全过；1 = 有失败项（打印到 stderr）。
+ *   **档位必须显式给，脚本绝不按文件内容猜档**：两个主模式的 id／order／技能根／审读员
+ *   工具名都不一样，猜档等于让校验器跟着被检对象走——把精简版的审读员行删光，也可能被
+ *   "猜"成完整版之后报通过。默认 full 只是为了让仓库日常那条命令（`npm run verify:full`）
+ *   不必带参数；`npm run verify:lite` 走的是 `--preset lite`。
  *
  * `--composition` 只为一件事：**在副本上验证失败路径**——把补丁改坏（截断、写回 `'\n'`、
- * 改错工具名、把审读员改成 one-shot），脚本必须报错，而这些改动不该留在仓库里。
+ * 改错工具名、把审读员 preset 挂回写工具、删掉 `agentPreset`、把审读员行挪到主模式之后），
+ * 脚本必须报错，而这些改动不该留在仓库里。
  * 它比 `--preset` 更具体：两者一起给时以它为准（档位只决定**期望值**，不决定读哪个文件）。
  *
- * 两件它**不能**代替的事：真实会话里的工具清单，以及子代理真的能起来。
+ * 两件它**不能**代替的事：真实会话里的工具清单，以及审读子代理真的能起来。
  *
  * **它需要 harness**：插件源码、Config schema 与 loader 的 YAML 方言（js-yaml +
  * `entryListSchema`）都从 `@deepseek-ai/*` 取，而本包没有依赖、仓库里没有 node_modules。
@@ -62,7 +80,7 @@
  * MODULE_NOT_FOUND，而脚本也就查不出"文件到底在不在"。
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeSync } from 'node:fs'
-import { readFile, readdir } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -109,99 +127,152 @@ const personaPart = (file, label) => ({ file: join(ROOT, file), label: label ?? 
 //
 // 两层补丁的**全部差异**都在这里：上面的检查逻辑一份都不复制，只按档位取期望值。加第三层
 // 补丁 = 在这里加一档，不改逻辑。表里每一条都对应"只在装配时才会暴露"的一个问题，理由写在
-// 条目旁边——精简不等于放松，它是另一组同样具体的期望值（例如审读员**刻意**少一个工具）。
+// 条目旁边——精简不等于放松，它是另一组同样具体的期望值（例如审读员**刻意**只有一位）。
 //
-// 档位由命令行显式给出（`--preset`），**绝不按文件内容猜**：两个 preset 的 id／order／技能根／
-// 审读员工具名都不同，猜档等于让校验器跟着被检对象走——把精简版的审读员行删光，也可能被
-// "猜"成完整版之后报通过。默认 full 是刻意的：仓库日常跑的就是它。
+// 每档描述"这个 patch 应该长什么样"：
+//   * `main`      主模式声明：`rowId`（loader 行 id，profile 的补丁按它覆写 config）、
+//                 `presetId`（config.id，会话日志与 agentPreset 按它走）、order、技能根、
+//                 入口技能、必须存在/刻意不要的行；
+//   * `reviewers` 每个只读审读员：自己的声明行 `rowId`、`config.id`（= 工具行的
+//                 `agentPreset`）、order、名字里必须出现的角色标记、对应的工具名，以及
+//                 persona 的**拼装顺序**（数组顺序 = 挂载时的拼接顺序）。
+//
+// 档位由命令行显式给出（`--preset`），**绝不按文件内容猜**：两个主模式的 id／order／技能根／
+// 审读员工具名都不同，猜档等于让校验器跟着被检对象走。默认 full 是刻意的：仓库日常跑的就是它。
 const PROFILES = {
   full: {
     patch: 'cordis.patch.yml', // 不给 --composition 时检哪一份
-    presetRowId: 'preset-short-story', // loader 行 id：profile 的补丁按它覆写 config
-    presetId: 'short-story', // config.id：会话日志与技能索引按它走
-    order: 5, // 官方预设占 1–4
-    // 技能根 → 该根下必须读得到的技能文件（相对该根）。根自己就是技能目录时文件写
-    // `SKILL.md`：skill-filesystem 扫根时目录取 `<目录>/SKILL.md`、文件取它自己。
-    skillRoots: [
-      {
-        // 完整版一个根装两份技能：`short-story`（流程）与 `writing-style-contract`（文风契约）。
-        // 契约只从这里挂——放进用户根（`<DSH_HOME>/skills`）会让它出现在所有模式里，包括编码会话。
-        dir: 'skills',
-        label: '包内 skills/',
-        skills: ['short-story/SKILL.md', 'writing-style-contract/SKILL.md'],
-      },
-    ],
-    // 五条审读员行：工具名 + 各自的人设片段。**只有 B4** 多拼一份文风契约——契约是给
-    // "文风执行"这个维度的判据，其余四位拿它只会多一段每轮都发的前缀。
+    main: {
+      rowId: 'preset-short-story', // loader 行 id：profile 的补丁按它覆写 config
+      presetId: 'short-story', // config.id：会话日志与技能索引按它走
+      order: 5, // 官方预设占 1–4
+      nameHint: null, // 主模式的名字只要求非空（措辞可以改）
+      // 通用出口：**不写** agentPreset，孩子加入父代理当前的 preset 修订（"再找一双眼睛"）。
+      genericToolName: 'subagent',
+      // 技能根 → 该根下必须读得到的技能文件（相对该根）。根自己就是技能目录时文件写
+      // `SKILL.md`：skill-filesystem 扫根时目录取 `<目录>/SKILL.md`、文件取它自己。
+      skillRoots: [
+        {
+          // 完整版一个根装两份技能：`short-story`（流程）与 `writing-style-contract`（文风契约）。
+          // 契约只从这里挂——放进用户根（`<DSH_HOME>/skills`）会让它出现在所有模式里，包括编码会话。
+          dir: 'skills',
+          label: '包内 skills/',
+          skills: ['short-story/SKILL.md', 'writing-style-contract/SKILL.md'],
+        },
+      ],
+      // 少一行 send_message / list_agents 就少一件工具，审读员复用不起来。
+      requiredRowNames: [
+        '@deepseek-ai/dsh-tool-subagent-control',
+        '@deepseek-ai/dsh-tool-subagent-control/list-agents',
+      ],
+      // 完整版不禁止任何工具行：查证（`tool-web`）与长程目标（`tool-goal`）在这里是功能。
+      forbiddenRowNames: [],
+      // 入口技能里必须能读到的两句新契约（0.2.1 的派发语义）：每行都要能检出。
+      entrySkill: 'skills/short-story/SKILL.md',
+    },
+    // 五条审读员声明 + 五条工具行：**角色人设只在自己的文件里**，由那个 preset 的 persona
+    // 在挂载时读出来。`persona` 数组的顺序就是拼接顺序（多片段用换行连接）。
     reviewers: [
       {
+        rowId: 'preset-short-story-review-b1',
+        presetId: 'story-review-b1',
+        order: 101,
+        nameHint: 'B1',
         toolName: 'subagent_review_b1',
         persona: [personaPart('skills/short-story/references/reviewers/b1-cold-read.md')],
       },
       {
+        rowId: 'preset-short-story-review-b2',
+        presetId: 'story-review-b2',
+        order: 102,
+        nameHint: 'B2',
         toolName: 'subagent_review_b2',
         persona: [personaPart('skills/short-story/references/reviewers/b2-story-logic.md')],
       },
       {
+        rowId: 'preset-short-story-review-b3',
+        presetId: 'story-review-b3',
+        order: 103,
+        nameHint: 'B3',
         toolName: 'subagent_review_b3',
         persona: [personaPart('skills/short-story/references/reviewers/b3-reading-experience.md')],
       },
       {
+        rowId: 'preset-short-story-review-b4',
+        presetId: 'story-review-b4',
+        order: 104,
+        nameHint: 'B4',
         toolName: 'subagent_review_b4',
+        // **只有 B4** 多拼一份文风契约——契约是给"文风执行"这个维度的判据，其余四位拿它
+        // 只会多一段每轮都发的前缀。
         persona: [
           personaPart('skills/short-story/references/reviewers/b4-style-execution.md'),
           personaPart('skills/writing-style-contract/SKILL.md', 'writing-style-contract/SKILL.md'),
         ],
       },
       {
+        rowId: 'preset-short-story-review-b5',
+        presetId: 'story-review-b5',
+        order: 105,
+        nameHint: 'B5',
         toolName: 'subagent_review_b5',
         persona: [personaPart('skills/short-story/references/reviewers/b5-physical-continuity.md')],
       },
     ],
     reviewerToolNameHint: 'subagent_review_b1…b5',
-    // `str_replace_editor` 在完整版里是允许的（历史行为，未改动）；它带 create/str_replace/
-    // insert 命令，所以这里的"只读"是靠 deny 与工具说明约束的，而不是物理上不可写。
-    reviewerAllow: ['read', 'read_image', 'str_replace_editor', 'glob', 'grep'],
-    reviewerAllowNote: '',
-    // 完整版不禁止任何工具行：查证（`tool-web`）与长程目标（`tool-goal`）在这里是功能。
-    forbiddenRowNames: [],
-    forbiddenToolNames: [],
+    // 五个角色工具在精简版里不存在；完整版当然可以有。
     forbiddenReviewerPattern: null,
-    // 两句字面契约（`send_message` / `run_in_background: false`）查哪份入口技能。
-    entrySkill: 'skills/short-story/SKILL.md',
-    // 少一行 send_message / list_agents 就少一件工具，审读员复用不起来。
-    requiredRowNames: [
-      '@deepseek-ai/dsh-tool-subagent-control',
-      '@deepseek-ai/dsh-tool-subagent-control/list-agents',
-    ],
   },
   lite: {
     patch: 'cordis.lite.patch.yml',
-    presetRowId: 'preset-short-story-lite', // 与完整版的 id 必须成对唯一：loader 按行 id 建表，
-    presetId: 'short-story-lite', // 撞了是**静默**的（后面的覆盖前面的，一个模式无声消失）
-    order: 6, // 完整版占 5，精简版排在它后面
-    // **两个根，各自只装该装的那一份**：
-    //   `skills-lite/`                   精简流程技能（只有 `short-story-lite/`）
-    //   `skills/writing-style-contract/` 文风契约（与完整版共用同一份文件）
-    // 第二个根指向契约**目录本身**：扫描根时目录取 `<目录>/SKILL.md`，所以指向它就能把契约
-    // 单独挂进来，不必复制一份、也不会产生第二份会漂移的契约。这样精简会话的技能清单里
-    // **没有**完整版的 `short-story` 技能——否则模型会去用它那些本模式不存在的角色工具。
-    skillRoots: [
-      {
-        dir: 'skills-lite',
-        label: '包内 skills-lite/',
-        skills: ['short-story-lite/SKILL.md'],
-      },
-      {
-        dir: join('skills', 'writing-style-contract'),
-        label: '包内 skills/writing-style-contract/',
-        skills: ['SKILL.md'],
-      },
-    ],
+    main: {
+      rowId: 'preset-short-story-lite', // 与完整版的 id 必须成对唯一：loader 按行 id 建表，
+      presetId: 'short-story-lite', // 撞了是**静默**的（后面的覆盖前面的，一个模式无声消失）
+      order: 6, // 完整版占 5，精简版排在它后面
+      nameHint: '精简', // roster 里必须自报精简档（「短篇小说模式（精简）」）
+      genericToolName: 'subagent',
+      // **两个根，各自只装该装的那一份**：
+      //   `skills-lite/`                   精简流程技能（只有 `short-story-lite/`）
+      //   `skills/writing-style-contract/` 文风契约（与完整版共用同一份文件）
+      // 第二个根指向契约**目录本身**：扫描根时目录取 `<目录>/SKILL.md`，所以指向它就能把契约
+      // 单独挂进来，不必复制一份、也不会产生第二份会漂移的契约。这样精简会话的技能清单里
+      // **没有**完整版的 `short-story` 技能——否则模型会去用它那些本模式不存在的角色工具。
+      skillRoots: [
+        {
+          dir: 'skills-lite',
+          label: '包内 skills-lite/',
+          skills: ['short-story-lite/SKILL.md'],
+        },
+        {
+          dir: join('skills', 'writing-style-contract'),
+          label: '包内 skills/writing-style-contract/',
+          skills: ['SKILL.md'],
+        },
+      ],
+      requiredRowNames: [
+        '@deepseek-ai/dsh-tool-subagent-control',
+        '@deepseek-ai/dsh-tool-subagent-control/list-agents',
+      ],
+      // 砍掉的几行都是"每轮都在前缀里"的常驻成本（`tool-web` 2 个、`tool-goal` 3 个 schema）。
+      // `command-goal` **必须连它一起砍**：它只注册 `/goal`，而读/建/标记目标的工具全在
+      // `tool-goal` 里；只留命令会让宿主把目标置为 armed、却没有任何工具能收回来。
+      // 设计上不要它们，所以行级钉住：加回来会被拦，而不是被当成新功能放行。
+      // （工具名住在这些行所属的包里，行级禁入比逐个工具名对账更直接、也不会漏。）
+      forbiddenRowNames: [
+        '@deepseek-ai/dsh-tool-web',
+        '@deepseek-ai/dsh-tool-goal',
+        '@deepseek-ai/dsh-command-goal',
+      ],
+      entrySkill: 'skills-lite/short-story-lite/SKILL.md',
+    },
     // **一位读者，五个维度。** 人设 = 合并审读员说明 + 文风契约全文，顺序与完整版 B4 相同
     // （角色说明在前、契约在后）。
     reviewers: [
       {
+        rowId: 'preset-short-story-review-merged',
+        presetId: 'story-review-merged',
+        order: 111,
+        nameHint: '合并',
         toolName: 'subagent_review',
         persona: [
           personaPart('skills-lite/references/reviewer-merged.md'),
@@ -210,27 +281,11 @@ const PROFILES = {
       },
     ],
     reviewerToolNameHint: 'subagent_review（精简版只有这一位合并审读员）',
-    // **不含 `str_replace_editor`，这是设计意图，不要"补"回来**：它的命令是 view / create /
-    // str_replace / insert，允许它等于"审读员物理上可写"，与"只读审读员"的说法不符；而且它的
-    // schema 是 2,803 字符，占这个子代理工具面（5,171 字符）的 54%，每次派发都要重发一遍。
-    reviewerAllow: ['read', 'read_image', 'glob', 'grep'],
-    reviewerAllowNote: '——精简版刻意不给审读员 str_replace_editor（create/str_replace/insert'
-      + ' 等于物理上可写，而且它的 schema 占这个子代理工具面一半以上），不要"补"回来',
-    // 砍掉的两行与它们带来的工具名都是"每轮都在前缀里"的常驻成本（`tool-web` 2 个、
-    // `tool-goal` 3 个 schema）。设计上不要它们，所以两个方向都钉住：加回来会被拦，
-    // 而不是被当成新功能放行。
-    forbiddenRowNames: ['@deepseek-ai/dsh-tool-web', '@deepseek-ai/dsh-tool-goal'],
-    forbiddenToolNames: ['web_search', 'web_fetch', 'get_goal', 'create_goal', 'update_goal'],
     // 五个角色工具在精简版里不存在（技能也不再提它们，只提"本模式没有的角色工具"）。
-    // 注意**不能**拿原文正则去扫 `subagent_review_b`：补丁注释里就写着"避免模型……去找本模式
-    // 不存在的 `subagent_review_b*` 工具"这句解释——扫原文会把正确的注释判成错误。
+    // 注意**不能**拿原文正则去扫 `subagent_review_b`：补丁注释里就写着"本模式没有的
+    // `subagent_review_b*` 工具"这类解释——扫原文会把正确的注释判成错误。
     // 所以只扫**解析后的工具名**：那是真会被注册、真会被派发的名字。
     forbiddenReviewerPattern: /^subagent_review_b\d+$/,
-    entrySkill: 'skills-lite/short-story-lite/SKILL.md',
-    requiredRowNames: [
-      '@deepseek-ai/dsh-tool-subagent-control',
-      '@deepseek-ai/dsh-tool-subagent-control/list-agents',
-    ],
   },
 }
 
@@ -712,26 +767,40 @@ if (!Array.isArray(authoritative)) {
 }
 notes.push('已用 loader 同款解析器（js-yaml + entryListSchema）交叉验证')
 
-// 形状部分交给权威解析器判定：读不懂的形状在这里就停下来，后面的检查才有意义。
+// ── 1d. insert 的形状：若干行 preset 声明 ───────────────────────────────────
+//
+// 0.2.1 的机制是"孩子的人设与工具面写在一个命名的 agent preset 里"，所以每份补丁插入的
+// 是**若干行声明**（审读员 + 主模式），而不是一行。下面先把形状定死，再把每一行的身份
+// 钉住——这些字段错了不会报错，只会让模式换个名字、排到别处、或者让 `agentPreset` 指空。
+
+// 形状交给权威解析器判定：读不懂的形状在这里就停下来，后面的检查才有意义。
 if (authoritative.length !== patchEntries.length) {
   die(`交叉验证：补丁条目数不一致（本脚本 ${patchEntries.length}，loader 方言 ${authoritative.length}）`)
 }
 const insertPatches = authoritative.filter((patch) => patch !== null && typeof patch === 'object' && 'insert' in patch)
 if (insertPatches.length !== 1) {
   die(`补丁文件顶层应有且只有 1 条 insert 补丁，实际 ${insertPatches.length} 条——`
-    + '本包只插自己那一行，不覆写别人的行（见文件头"注意：这一行可以被用户 patch 覆盖"）')
+    + '本包只插自己的声明行，不覆写别人的行（见补丁文件头"这些行可以被用户 patch 覆盖"）')
 }
 const inserted = insertPatches[0].insert
 if (!Array.isArray(inserted)) die('insert 的值不是行列表')
-if (inserted.length !== 1) die(`insert 应当只插 1 行（preset 声明行），实际 ${inserted.length} 行`)
-const presetRow = inserted[0]
-if (presetRow === null || typeof presetRow !== 'object' || Array.isArray(presetRow)) die('insert 里的 preset 行不是映射')
-const presetPlugins = presetRow.config?.plugins
-if (!Array.isArray(presetPlugins) || presetPlugins.length === 0) {
-  die('preset 行的 config.plugins 不是非空行列表——模式的全部子插件都写在那里')
+
+/**
+ * 一份补丁应有的声明行数：N 个审读员 + 1 个主模式。
+ *
+ * 少一行 = 某位读者没有自己的只读工具面（`agentPreset` 会指空、主模式整行 broken）；
+ * 多一行 = 有本档位没设计过的角色出现在模式选择器里。两种都不该被静默放行。
+ */
+const EXPECTED_PRESET_ROWS = PROFILE.reviewers.length + 1
+if (inserted.length !== EXPECTED_PRESET_ROWS) {
+  die(`insert 应当插入 ${EXPECTED_PRESET_ROWS} 行 preset 声明（${PROFILE.reviewers.length} 个审读员 + 1 个主模式），`
+    + `实际 ${inserted.length} 行`)
 }
-const localPreset = patchEntries[0]?.insert?.[0]
-if (localPreset === undefined) die('本脚本的读取器没读出一条 insert 行（补丁形状变了）')
+const localInserted = patchEntries.find((patch) => patch !== null && typeof patch === 'object' && 'insert' in patch)?.insert
+if (!Array.isArray(localInserted)) die('本脚本的读取器没读出一条 insert 行（补丁形状变了）')
+if (localInserted.length !== inserted.length) {
+  die(`交叉验证：insert 行数不一致（本脚本 ${localInserted.length}，loader 方言 ${inserted.length}）`)
+}
 
 /**
  * 行的 `name` 必须是一个字符串。
@@ -745,53 +814,123 @@ function nameProblem(at, value) {
     + 'loader 只对 config（与 disabled）求值，`name: !!js …` 只会把它变成对象，整行不挂载'
 }
 
-if (typeof presetRow.name !== 'string') die(nameProblem(presetRow.id ?? 'preset', presetRow.name))
-if (localPreset.id !== presetRow.id || localPreset.name !== presetRow.name) {
-  die(`交叉验证：preset 行的 id/name 两种解析不同（本脚本 ${JSON.stringify(localPreset.id)}/${JSON.stringify(localPreset.name)}，`
-    + `loader 方言 ${JSON.stringify(presetRow.id)}/${JSON.stringify(presetRow.name)}）`)
+/** 把 preset 声明行 `config` 里除 `plugins` 之外的字段取出来（这些才是 loader 会插值的 metadata）。 */
+function metadataOf(row) {
+  return Object.fromEntries(Object.entries(row?.config ?? {}).filter(([key]) => key !== 'plugins'))
 }
 
-const compositionRows = flattenRows(presetPlugins, '')
-const localCompositionRows = flattenRows(localPreset.config?.plugins ?? [], '')
-if (localCompositionRows.length !== compositionRows.length) {
-  die(`交叉验证：子插件行数不一致（本脚本 ${localCompositionRows.length}，loader 方言 ${compositionRows.length}）`)
+/** 两套解析器对同一串 `!!js` 的结果必须逐字相同：不同就说明 YAML 转义把源码改写了。 */
+function assertSameExpressions(left, right, where) {
+  if (left.length !== right.length) {
+    die(`交叉验证：${where} 的 !!js 数量不一致（本脚本 ${left.length}，loader 方言 ${right.length}）`)
+  }
+  for (let position = 0; position < left.length; position += 1) {
+    if (left[position] === right[position]) continue
+    err(`[FAIL] ${where} 的第 ${position + 1} 个 !!js 两种解析结果不同——说明值里有 YAML 转义被改写了：`)
+    err(`  本脚本（不做转义）：${JSON.stringify(left[position]).slice(0, 160)}`)
+    err(`  loader 方言（真实）：${JSON.stringify(right[position]).slice(0, 160)}`)
+    process.exit(1)
+  }
+}
+
+const presetDeclarations = inserted.map((row, index) => {
+  const localRow = localInserted[index]
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+    die(`insert 里的第 ${index + 1} 行不是映射（preset 声明行必须写成 - id/name/config）`)
+  }
+  if (localRow === null || typeof localRow !== 'object' || Array.isArray(localRow)) {
+    die(`交叉验证：本脚本读到的 insert 第 ${index + 1} 行不是映射`)
+  }
+  if (typeof row.name !== 'string') die(nameProblem(row.id ?? `insert 第 ${index + 1} 行`, row.name))
+  if (localRow.id !== row.id || localRow.name !== row.name) {
+    die(`交叉验证：insert 第 ${index + 1} 行的 id/name 两种解析不同（本脚本 ${JSON.stringify(localRow.id)}/${JSON.stringify(localRow.name)}，`
+      + `loader 方言 ${JSON.stringify(row.id)}/${JSON.stringify(row.name)}）`)
+  }
+  const plugins = row.config?.plugins
+  if (!Array.isArray(plugins) || plugins.length === 0) {
+    die(`preset 行 ${row.id} 的 config.plugins 不是非空行列表——模式（或审读员角色）的全部子插件都写在那里`)
+  }
+  const localPlugins = localRow.config?.plugins
+  if (!Array.isArray(localPlugins) || localPlugins.length !== plugins.length) {
+    die(`交叉验证：preset 行 ${row.id} 的 config.plugins 行数不一致（本脚本 ${localPlugins?.length}，loader 方言 ${plugins.length}）`)
+  }
+  return { index, row, localRow, id: row.id, config: row.config ?? {}, metadata: metadataOf(row), plugins }
+})
+
+// 每个声明行（metadata 里若将来出现 `!!js`）与它的子树都要两套解析器逐字比对。
+for (const declaration of presetDeclarations) {
+  assertSameExpressions(
+    jsExprs(metadataOf(declaration.localRow)),
+    jsExprs(declaration.metadata),
+    `preset 行 ${declaration.id} 的 config（除 plugins 外）`,
+  )
+  const localChildren = flattenRows(declaration.localRow.config?.plugins ?? [], '')
+  const children = flattenRows(declaration.plugins, '')
+  if (localChildren.length !== children.length) {
+    die(`交叉验证：preset 行 ${declaration.id} 的子插件行数不一致（本脚本 ${localChildren.length}，loader 方言 ${children.length}）`)
+  }
+  for (let index = 0; index < children.length; index += 1) {
+    const mine = localChildren[index]
+    const theirs = children[index]
+    if (mine.at !== theirs.at) {
+      die(`交叉验证：preset 行 ${declaration.id} 第 ${index + 1} 条子行的路径不同（本脚本 ${mine.at}，loader 方言 ${theirs.at}）`)
+    }
+    if (typeof theirs.row.name !== 'string') die(nameProblem(`${declaration.id}/${theirs.at}`, theirs.row.name))
+    if (mine.row.name !== theirs.row.name) {
+      die(`子行 ${declaration.id}/${theirs.at} 的 name 两种解析不同（本脚本 ${JSON.stringify(mine.row.name)}，`
+        + `loader 方言 ${JSON.stringify(theirs.row.name)}）`)
+    }
+    if (mine.group !== theirs.group) die(`子行 ${declaration.id}/${theirs.at} 的 group 两种解析不同`)
+    // 分组行的 `config` 是**子行列表**：它自己不带 config，子行各自负责自己的表达式。
+    if (theirs.group) continue
+    assertSameExpressions(jsExprs(mine.row.config ?? {}), jsExprs(theirs.row.config ?? {}), `子行 ${declaration.id}/${theirs.at} 的 config`)
+  }
+}
+
+/**
+ * 全部待检查的条目：先是一条 preset 声明行（`isPreset`），再是它 `config.plugins` 里
+ * 摊平后的子行（分组行会递归进 `config`）。路径带上声明行 id，报告里能一眼看出问题在
+ * 哪个 preset 里（`preset-short-story-review-b4/persona`）。
+ */
+const presetEntries = presetDeclarations.map((declaration) => ({
+  at: declaration.id,
+  path: null,
+  row: declaration.row,
+  group: false,
+  isPreset: true,
+  declaration,
+  // 声明行要过 `@deepseek-ai/dsh-agent-preset` 的 schema：metadata + **原始**子行列表
+  // （子行的 config 由子行各自负责）。`plugins` 是 `z.array(z.any())`，原样传进去。
+  schemaConfig: { ...declaration.metadata, plugins: declaration.plugins },
+}))
+const childEntries = presetDeclarations.flatMap((declaration) => flattenRows(declaration.plugins, '')
+  .map((entry) => ({
+    at: `${declaration.id}/${entry.at}`,
+    path: entry.at,
+    row: entry.row,
+    group: entry.group,
+    isPreset: false,
+    declaration,
+  })))
+const allEntries = [...presetEntries, ...childEntries]
+
+/** 一行自己负责求值 / 编译的 `!!js`（声明行只负责 metadata，`plugins` 交给子行各自负责）。 */
+function ownExpressions(entry) {
+  const found = []
+  if (entry.isPreset === true) jsExprs(entry.declaration.metadata, found)
+  else if (entry.group !== true) jsExprs(entry.row.config ?? {}, found)
+  if (isJsExpr(entry.row.disabled)) found.push(entry.row.disabled.__jsExpr)
+  return found
 }
 
 let compiledExpressions = 0
-for (let index = 0; index < compositionRows.length; index += 1) {
-  const mine = localCompositionRows[index]
-  const theirs = compositionRows[index]
-  if (mine.at !== theirs.at) {
-    die(`交叉验证：第 ${index + 1} 条行的路径不同（本脚本 ${mine.at}，loader 方言 ${theirs.at}）`)
-  }
-  if (typeof theirs.row.name !== 'string') die(nameProblem(theirs.at, theirs.row.name))
-  if (mine.row.name !== theirs.row.name) {
-    die(`行 ${theirs.at} 的 name 两种解析不同（本脚本 ${JSON.stringify(mine.row.name)}，`
-      + `loader 方言 ${JSON.stringify(theirs.row.name)}）`)
-  }
-  if (mine.group !== theirs.group) die(`行 ${theirs.at} 的 group 两种解析不同`)
-  // 分组行的 `config` 是**子行列表**：它自己不带 config，子行各自负责自己的表达式。
-  if (theirs.group) continue
-  const left = jsExprs(mine.row.config ?? {})
-  const right = jsExprs(theirs.row.config ?? {})
-  if (left.length !== right.length) {
-    die(`行 ${theirs.at} 的 !!js 数量不一致（本脚本 ${left.length}，loader 方言 ${right.length}）`)
-  }
-  for (let position = 0; position < left.length; position += 1) {
-    if (left[position] !== right[position]) {
-      err(`[FAIL] 行 ${theirs.at} 的第 ${position + 1} 个 !!js 两种解析结果不同——说明值里有 YAML 转义被改写了：`)
-      err(`  本脚本（不做转义）：${JSON.stringify(left[position]).slice(0, 160)}`)
-      err(`  loader 方言（真实）：${JSON.stringify(right[position]).slice(0, 160)}`)
-      process.exit(1)
-    }
-  }
-  // 真正那句：每个表达式都必须能编译。语法错误挂载时才炸，而那时 roster 里那一条直接 broken。
-  for (const source of right) {
+for (const entry of allEntries) {
+  for (const source of ownExpressions(entry)) {
     try {
       compileExpression(source)
       compiledExpressions += 1
     } catch (error) {
-      err(`[FAIL] 行 ${theirs.at} 的 !!js 编译不过：${error.message}`)
+      err(`[FAIL] ${entry.at} 的 !!js 编译不过：${error.message}`)
       err(`  源码：${JSON.stringify(source).slice(0, 200)}`)
       err('  提示：YAML 双引号标量会先处理 \\n \\t 这类转义；换行请用 String.fromCharCode(10)。')
       process.exit(1)
@@ -812,7 +951,7 @@ if (riskyScalar.length > 0) {
   process.exit(1)
 }
 
-// ── 1d. 求值环境（临时目录 + junction）与每个 `!!js` 的求值 ──────────────────
+// ── 1e. 求值环境（临时目录 + junction）与每个 `!!js` 的求值 ──────────────────
 //
 // `!!js` 在**那一行加载时**求值，那一刻 `ctx.baseUrl` 是 profile 目录（不是包目录），
 // 所以包内路径全是 `createRequire(baseUrl).resolve('dsh-story-mode/package.json')` 问出来的。
@@ -880,22 +1019,7 @@ function interpolate(value) {
 
 // loader 只对 `config` 与 `disabled` 求值（`name` 永远不插值）。这一节把两者都跑一遍，
 // 并顺带查"!!js 写在不会被求值的位置上"——那是 `name: !!js …` 那类错误的同一族。
-const PRESET_AT = presetRow.id ?? 'preset'
-const presetMetadataRaw = Object.fromEntries(
-  Object.entries(presetRow.config ?? {}).filter(([key]) => key !== 'plugins'),
-)
-/** 一行自己负责求值的 `!!js`（与下面的求值循环一一对应）。 */
-function ownExpressions(entry) {
-  const found = []
-  if (entry.isPreset === true) jsExprs(presetMetadataRaw, found)
-  else if (entry.group !== true) jsExprs(entry.row.config ?? {}, found)
-  if (isJsExpr(entry.row.disabled)) found.push(entry.row.disabled.__jsExpr)
-  return found
-}
-
-const allRows = [{ at: PRESET_AT, row: presetRow, group: false, isPreset: true }, ...compositionRows]
-
-for (const entry of allRows) {
+for (const entry of allEntries) {
   const stray = []
   for (const [key, value] of Object.entries(entry.row ?? {})) {
     if (key === 'config' || key === 'disabled') continue
@@ -913,9 +1037,9 @@ for (const entry of allRows) {
     // preset 行的 config 是**载体**（`plugins` 是子行列表），loader 不整体插值它：
     // 子行的表达式由子行自己求值——所以这里只求 metadata，plugins 交给下面每一行。
     try {
-      entry.resolvedConfig = interpolate(presetMetadataRaw)
+      entry.resolvedConfig = interpolate(entry.declaration.metadata)
     } catch (error) {
-      fail(`行 ${entry.at} 的 !!js 求值失败：${error.message}`)
+      fail(`preset 行 ${entry.at} 的 !!js 求值失败：${error.message}`)
       entry.resolvedConfig = {}
     }
   } else if (entry.group) {
@@ -937,7 +1061,7 @@ for (const entry of allRows) {
   }
 }
 
-const declaredExpressions = allRows.reduce((sum, entry) => sum + ownExpressions(entry).length, 0)
+const declaredExpressions = allEntries.reduce((sum, entry) => sum + ownExpressions(entry).length, 0)
 if (declaredExpressions !== compiledExpressions) {
   die(`!!js 数量对不上：交叉验证阶段编译了 ${compiledExpressions} 个，求值阶段应负责 ${declaredExpressions} 个`
     + '（可能写在分组行自己的 config 里，或者行数两种解析不同）')
@@ -948,45 +1072,145 @@ if (evaluatedExpressions !== declaredExpressions) {
 }
 notes.push(`共 ${compiledExpressions} 个 !!js：全部编译通过、逐字比对未被 YAML 改写，并在临时解析环境里求值`)
 
-// ── 2. 组合形状 ─────────────────────────────────────────────────────────────
+// ── 2. 声明行的身份：config.id / order / 名字 / 顺序 ───────────────────────
 //
-// 插进去的那一行是**预设声明**：id/name 决定它在 roster 里的身份，config.plugins 才是模式。
-// 这几个字段错了不会报错，只会让模式换个名字、排到别处或者干脆空着——所以逐条钉住，
-// 期望值按档位取（精简版的 id 必须成对唯一：两个 id 撞了是**静默**的）。
-if (presetRow.id !== PROFILE.presetRowId) {
-  fail(`preset 行的 id 应为 ${PROFILE.presetRowId}（profile 的补丁按它覆写），实际 ${JSON.stringify(presetRow.id)}`)
+// 这些字段错了不会报错：id 错了 `agentPreset` 指空（主模式 broken）、order 错了在
+// 模式选择器里排错位置、名字错了用户看不出该选哪个。审读员行还多一条**顺序**约束：
+// `tool-subagent` 在挂载时校验目标声明已经注册——见文件头。
+const declarationByPresetId = new Map()
+const seenRowIds = new Set()
+for (const declaration of presetDeclarations) {
+  if (typeof declaration.id !== 'string' || declaration.id.length === 0) {
+    fail(`insert 里有一行声明没有 id（loader 靠 id 建表，没有它会静默跳过）`)
+    continue
+  }
+  if (seenRowIds.has(declaration.id)) {
+    fail(`loader 行 id 重复：${declaration.id}——loader 按行 id 建表，后者会**静默**覆盖前面的行，一个模式无声消失`)
+  }
+  seenRowIds.add(declaration.id)
+  const presetId = declaration.config.id
+  if (typeof presetId !== 'string' || presetId.length === 0) {
+    fail(`preset 行 ${declaration.id} 没有 config.id——roster、会话日志与 agentPreset 都按它索引，`
+      + `实际 ${JSON.stringify(presetId)}`)
+    continue
+  }
+  if (declarationByPresetId.has(presetId)) {
+    fail(`preset config.id 重复：${presetId}（行 ${declarationByPresetId.get(presetId).id} 与 ${declaration.id}）——`
+      + '注册表会抛 Duplicate agent preset，两个模式一起 broken')
+  } else {
+    declarationByPresetId.set(presetId, declaration)
+  }
 }
-if (presetRow.name !== '@deepseek-ai/dsh-agent-preset') {
-  fail(`preset 行的 name 应为 @deepseek-ai/dsh-agent-preset，实际 ${JSON.stringify(presetRow.name)}`)
+
+const expectedPresetIds = new Set([...PROFILE.reviewers.map((spec) => spec.presetId), PROFILE.main.presetId])
+for (const expected of expectedPresetIds) {
+  if (!declarationByPresetId.has(expected)) {
+    fail(`缺少 config.id 为 ${expected} 的 preset 声明——本档位的${expected === PROFILE.main.presetId ? '主模式' : '一位审读员'}没有声明行`)
+  }
 }
-const presetConfig = { ...(allRows[0].resolvedConfig ?? {}), plugins: presetPlugins }
-if (presetConfig.id !== PROFILE.presetId) {
-  fail(`preset config.id 应为 ${PROFILE.presetId}（会话日志与 skills 目录都按它索引），实际 ${JSON.stringify(presetConfig.id)}`)
+for (const [presetId, declaration] of declarationByPresetId) {
+  if (!expectedPresetIds.has(presetId)) {
+    fail(`多出未预期的 preset 声明 ${declaration.id}（config.id ${presetId}）——本档位只声明 `
+      + `${[...expectedPresetIds].join('、')}；多出来的行会出现在模式选择器里，也没有工具行指向它`)
+  }
 }
-if (typeof presetConfig.name !== 'string' || presetConfig.name.trim().length === 0) {
-  fail(`preset config.name 是非空字符串（roster 里显示的名字），实际 ${JSON.stringify(presetConfig.name)}`)
+
+const mainDeclaration = declarationByPresetId.get(PROFILE.main.presetId)
+if (mainDeclaration === undefined) {
+  fail(`主模式声明（config.id ${PROFILE.main.presetId}）缺失——这是本档位最重要的一行`)
+} else {
+  if (mainDeclaration.id !== PROFILE.main.rowId) {
+    fail(`主模式的 loader 行 id 应为 ${PROFILE.main.rowId}（profile 的补丁按它覆写），实际 ${JSON.stringify(mainDeclaration.id)}`)
+  }
+  if (mainDeclaration.config.order !== PROFILE.main.order) {
+    fail(`主模式 config.order 应为 ${PROFILE.main.order}（官方预设占 1–4；完整版 5、精简版排在它后面），`
+      + `实际 ${JSON.stringify(mainDeclaration.config.order)}`)
+  }
+  const name = mainDeclaration.config.name
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    fail(`主模式 config.name 是非空字符串（roster 里显示的名字），实际 ${JSON.stringify(name)}`)
+  } else if (PROFILE.main.nameHint !== null && !name.includes(PROFILE.main.nameHint)) {
+    fail(`主模式 config.name 应自报档位（包含「${PROFILE.main.nameHint}」），实际 ${JSON.stringify(name)}`)
+  }
+  if (typeof mainDeclaration.config.description !== 'string' || mainDeclaration.config.description.trim().length === 0) {
+    fail('主模式 config.description 是非空字符串（模式选择器里的说明）')
+  }
+  if (mainDeclaration.disabledValue === true) {
+    fail(`主模式声明 ${mainDeclaration.id} 被 disabled——整个模式不会挂载`)
+  }
 }
-if (typeof presetConfig.order !== 'number' || !Number.isFinite(presetConfig.order)) {
-  fail(`preset config.order 必须是数字（官方预设占 1–4，本模式排在后面），实际 ${JSON.stringify(presetConfig.order)}`)
-} else if (presetConfig.order !== PROFILE.order) {
-  // order 是**排他**的：两层补丁各声明一个 preset，两个都写 5 会让 roster 里的先后由合并顺序
-  // 决定（看起来像"精简版不见了"），所以档位表把数字钉死（完整版 5、精简版 6）。
-  fail(`preset config.order 应为 ${PROFILE.order}（官方预设占 1–4；完整版 5、精简版排在它后面），`
-    + `实际 ${JSON.stringify(presetConfig.order)}`)
+
+for (const spec of PROFILE.reviewers) {
+  const declaration = declarationByPresetId.get(spec.presetId)
+  if (declaration === undefined) continue // 缺声明上面已经报过
+  if (declaration.id !== spec.rowId) {
+    fail(`审读员 ${spec.presetId} 的 loader 行 id 应为 ${spec.rowId}，实际 ${JSON.stringify(declaration.id)}`)
+  }
+  if (declaration.config.order !== spec.order) {
+    fail(`审读员 ${spec.presetId} 的 config.order 应为 ${spec.order}，实际 ${JSON.stringify(declaration.config.order)}`
+      + '（101+ 排在主模式之后；它们会出现在模式选择器里，order 与名字一起告诉用户不要直接选）')
+  }
+  const name = declaration.config.name
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    fail(`审读员 ${spec.presetId} 的 config.name 是非空字符串，实际 ${JSON.stringify(name)}`)
+  } else {
+    if (!name.includes(spec.nameHint)) {
+      fail(`审读员 ${spec.presetId} 的 config.name 应标明角色（包含「${spec.nameHint}」），实际 ${JSON.stringify(name)}`)
+    }
+    if (!name.includes('内部')) {
+      fail(`审读员 ${spec.presetId} 的 config.name 必须带「内部」——0.2.1 的 preset 注册表没有隐藏字段，`
+        + '这些行会出现在模式选择器里，名字要让人一眼看出不该直接选')
+    }
+  }
+  const description = declaration.config.description
+  if (typeof description !== 'string' || description.trim().length === 0) {
+    fail(`审读员 ${spec.presetId} 的 config.description 是非空字符串（选择器里要说明它是派发用的）`)
+  } else if (!description.includes('不要直接选择')) {
+    fail(`审读员 ${spec.presetId} 的 config.description 必须写明"不要直接选择"——`
+      + '这些 preset 没有隐藏字段，会出现在模式选择器里，选错只会得到一个只读阅读器')
+  }
+  if (declaration.disabledValue === true) {
+    fail(`审读员声明 ${declaration.id} 被 disabled——主模式的 agentPreset 会指空，整行在挂载时 broken`)
+  }
+  if (declaration.plugins.some((row) => row.group === true)) {
+    fail(`审读员 preset ${spec.presetId} 里出现了分组行——只读组合只有三行平铺的子插件，不需要 realm 分组`)
+  }
 }
-if (!Array.isArray(presetConfig.plugins) || presetConfig.plugins.length === 0) {
-  fail('preset config.plugins 必须是非空行列表')
+
+// 顺序：审读员行按角色表的顺序排在主模式行**之前**。倒序是 0.2.1 最典型的一次
+// "文件形状完全合法、装上去整个模式 broken"的故障，所以顺序被当成硬契约。
+if (mainDeclaration !== undefined) {
+  let previous = null
+  for (const spec of PROFILE.reviewers) {
+    const declaration = declarationByPresetId.get(spec.presetId)
+    if (declaration === undefined) continue
+    if (declaration.index > mainDeclaration.index) {
+      fail(`审读员 preset 行 ${declaration.id}（config.id ${spec.presetId}）排在主模式行 ${mainDeclaration.id} **之后**`
+        + '——0.2.1 的 tool-subagent 在挂载时就校验 agentPreset 指向的声明已经注册；'
+        + '倒序会让整个主模式变成 broken 行（模式在选择器里红着、切不进去）')
+    }
+    if (previous !== null && declaration.index <= previous.index) {
+      fail(`审读员 preset 行的顺序不对：${declaration.id} 应排在 ${previous.id} 之后——`
+        + `顺序固定为 ${PROFILE.reviewers.map((item) => item.rowId).join(' → ')}，最后才是主模式`)
+    }
+    previous = declaration
+  }
 }
-notes.push(`preset ${PRESET_AT} = ${JSON.stringify(presetConfig.id)}（${JSON.stringify(presetConfig.name)}，order ${JSON.stringify(presetConfig.order)}）：`
-  + `子插件 ${presetPlugins.length} 行、摊平 ${compositionRows.length} 条（含分组行）`)
-// preset 行也要过它自己的 schema（`plugins` 必填、config 里不该有拼错的键）：它校验的是
-// metadata + **原始**子行列表——子行的 config 由子行各自负责。
-allRows[0].schemaConfig = presetConfig
+
+notes.push(`preset 声明 ${presetDeclarations.length} 行：${presetDeclarations.map((declaration) => declaration.id).join('、')}`)
+
+// 主模式的子插件（后面所有检查都在这个集合里找行）。
+const mainChildren = mainDeclaration === undefined
+  ? []
+  : childEntries.filter((entry) => entry.declaration === mainDeclaration)
+const mainChild = (path) => mainChildren.find((entry) => entry.path === path)
 
 // ── 3. 每一行的 config 过插件自己的 schema ──────────────────────────────────
 //
 // 组合里写的字段名/类型与插件自己的 `Config` 不符时，loader 会在挂载那一刻拒绝整行；
-// 表现同样是 preset broken。这里用 harness 里那个插件的真实 schema 逐行校验。
+// 表现同样是 preset broken。这里用 harness 里那个插件的真实 schema 逐行校验——**审读员
+// 声明行与工具行都在内**：前者错 `plugins` 缺失/类型不对，后者错 `agentPreset` 类型或
+// 拼写字段（schema 会忽略未知字段，所以"0.1.7 遗留字段"另有一节专门查）。
 const packageEntry = (pkg) => {
   const root = pkg.exports?.['.']
   if (typeof root === 'string') return root
@@ -999,21 +1223,25 @@ const packageEntry = (pkg) => {
 }
 
 let schemaChecked = 0
-for (const entry of allRows) {
+for (const entry of allEntries) {
   if (entry.group) continue
   const name = entry.row.name
   if (typeof name !== 'string' || !name.startsWith('@deepseek-ai/dsh-')) continue
-  // 子路径行（`…/list-agents`）的 package.json 通常不在 exports 里；schema 校验
-  // 只对整包行做，它们才是带 config 的那些。
-  let entryPath
+  const basePackage = name.split('/').slice(0, 2).join('/')
+  let baseEntryPath
   try {
-    entryPath = harnessRequire.resolve(`${name}/package.json`)
+    baseEntryPath = harnessRequire.resolve(`${basePackage}/package.json`)
   } catch {
+    // 包名敲错时 loader 不会在自检时告诉你：它只会在挂载时把整行标成 broken。所以这里失败。
+    fail(`行 ${entry.at} 的插件包 ${basePackage} 解析不到——行名敲错会让整行在挂载时 broken`)
     continue
   }
+  // 子路径入口（`…/list-agents`）的 package.json 通常不在 exports 里；schema 校验
+  // 只对整包行做，它们才是带 config 的那些。
+  if (name !== basePackage) continue
   try {
-    const pkg = JSON.parse(await readFile(entryPath, 'utf8'))
-    const moduleUrl = new URL(packageEntry(pkg), pathToFileURL(entryPath))
+    const pkg = JSON.parse(await readFile(baseEntryPath, 'utf8'))
+    const moduleUrl = new URL(packageEntry(pkg), pathToFileURL(baseEntryPath))
     const mod = await import(moduleUrl.href)
     // 两种导出形态：命名导出 `Config`，或默认导出的插件类上的 `static Config`。
     // 漏掉后者会让 agent-preset / tool-result-pruner 这类行**静默跳过**校验。
@@ -1032,15 +1260,15 @@ for (const entry of allRows) {
     fail(`行 ${entry.at}（${name}）导入失败，无法校验：${error.message}`)
   }
 }
-// preset 行的 schemaConfig 在第 2 节就算好了（metadata + **原始**子行列表：子行的 config
-// 由子行各自负责），所以上面这一圈已经把 preset 行一起校验过了。
+// preset 声明行的 schemaConfig 在构造条目时就算好了（metadata + **原始**子行列表：子行的
+// config 由子行各自负责），所以上面这一圈已经把声明行一起校验过了。
 notes.push(`config 过 schema：${schemaChecked} 行（用的是 harness 里那些插件自己的 Config）`)
 
 // ── 4. 技能根与审读员人设文件 ───────────────────────────────────────────────
 //
 // 这两件事都是"路径只有运行时才算得出来"的：skill-filesystem 的 customSkillDirs 与每个
-// 审读员行的 persona 都由 `!!js` 在挂载时求值。第 1d 节已经让它们真的跑过一遍，
-// 这里只判断结果对不对——文件缺失会让那一行 config 无效、整个 preset 挂不上。
+// 审读员 persona 都由 `!!js` 在挂载时求值。第 1d 节已经让它们真的跑过一遍，这里只判断
+// 结果对不对——文件缺失会让那一行 config 无效、整个 preset 挂不上。
 // 期望值全部来自 PROFILES：完整版一个技能根（两份技能）、精简版两个根（各自一份），
 // 人名与 persona 片段也一样是"按档位取值"，检查代码一条都不分档。
 
@@ -1048,10 +1276,10 @@ notes.push(`config 过 schema：${schemaChecked} 行（用的是 harness 里那�
 // 补上根目录名——否则两个根各自那份 `SKILL.md` 在报告里同名，分不清是谁。
 const skillLabel = (rootDir, file) => (file.includes('/') ? file : `${basename(rootDir)}/${file}`)
 
-const skillRow = compositionRows.find((entry) => entry.at === 'skill-filesystem')
+const skillRow = mainChild('skill-filesystem')
 const skillDirs = skillRow?.resolvedConfig?.customSkillDirs
 if (skillRow === undefined) {
-  fail('组合里没有 id: skill-filesystem 的那一行——技能（含文风契约）不会挂进本模式')
+  fail(`主模式里没有 id: skill-filesystem 的那一行——技能（含文风契约）不会挂进本模式`)
 } else if (!Array.isArray(skillDirs) || skillDirs.length === 0) {
   fail(`行 ${skillRow.at} 的 customSkillDirs 不是非空列表：${JSON.stringify(skillDirs)}`)
 } else {
@@ -1074,13 +1302,13 @@ if (skillRow === undefined) {
         + '技能必须跟着包走；包外路径在别的机器上不存在，模式里只会得到"技能不可用"')
     }
   }
-  if (skillDirs.length !== PROFILE.skillRoots.length) {
-    fail(`行 ${skillRow.at} 的 customSkillDirs 应有 ${PROFILE.skillRoots.length} 个根`
-      + `（${PROFILE.skillRoots.map((root) => root.label).join('、')}），`
+  if (skillDirs.length !== PROFILE.main.skillRoots.length) {
+    fail(`行 ${skillRow.at} 的 customSkillDirs 应有 ${PROFILE.main.skillRoots.length} 个根`
+      + `（${PROFILE.main.skillRoots.map((root) => root.label).join('、')}），`
       + `实际 ${skillDirs.length} 个：${JSON.stringify(skillDirs)}`)
   }
-  for (let index = 0; index < PROFILE.skillRoots.length; index += 1) {
-    const root = PROFILE.skillRoots[index]
+  for (let index = 0; index < PROFILE.main.skillRoots.length; index += 1) {
+    const root = PROFILE.main.skillRoots[index]
     const expected = join(ROOT, root.dir)
     if (index < skillDirs.length && !samePath(skillDirs[index], expected)) {
       // 位置也算数：精简版第二个根指向契约**目录本身**（扫描根时目录取 `<目录>/SKILL.md`），
@@ -1104,289 +1332,285 @@ if (skillRow === undefined) {
   }
 }
 
-// 审读员行的筛子用**前缀** `subagent_review`（不带尾下划线）：精简版的工具名就是它本身。
-// 两个档位因此共用一条筛子，而"名字敲错"（`subagent_review_b9`）仍然会被算成审读员行——
-// 只按档位点名筛的话，坏掉的那一行会直接消失，脚本就只剩"应有 5 个、实际 4 个"。
-const reviewers = compositionRows.filter((entry) => typeof entry.resolvedConfig?.toolName === 'string'
-  && entry.resolvedConfig.toolName.startsWith('subagent_review'))
-const expectedReviewers = new Map(PROFILE.reviewers.map((item) => [item.toolName, item]))
+// ── 4b. 审读员 preset：只读是**组合**保证的 ────────────────────────────────
+//
+// 0.2.1 没有 `toolFilter`：审读员的工具面 = 那个 preset 里挂了的行。所以只读不是名单问题，
+// 而是"这个 preset 里到底有什么"的问题。下面把三行钉死，任何一行多出来（编辑器、写文件、
+// 交付、技能、压缩）都会失败——这正是旧机制里 allow/deny 对账要防的那类回归，现在更硬。
+const READER_ROWS = [
+  { id: 'persona', name: '@deepseek-ai/dsh-persona' },
+  { id: 'tool-fs', name: '@deepseek-ai/dsh-tool-fs' },
+  { id: 'tool-fs-search', name: '@deepseek-ai/dsh-tool-fs-search' },
+]
+const readerRowNote = '（只读是组合保证的：写入、编辑、交付、委派、技能与压缩工具根本没有挂载）'
 
-// persona 必须**逐字**等于档位表里那几份文件按顺序拼起来的结果（完整版 B4 与精简版那位合并
-// 审读员都是"角色说明 + 换行 + 文风契约全文"）。第 1d 节已经让补丁里的 `!!js` 真跑过一遍，
-// 这里只判断结果对不对——读的是同一批文件，所以"文件被清空、路径改错、顺序拼反"都在这里现形。
-for (const entry of reviewers) {
-  const { toolName, persona } = entry.resolvedConfig
-  const spec = expectedReviewers.get(toolName)
-  if (spec === undefined) {
-    fail(`行 ${entry.at} 的审读员工具名 ${toolName} 不在角色表里（应为 ${PROFILE.reviewerToolNameHint}）`)
-    continue
-  }
+/** 人设必须**逐字**等于档位表里那几份文件按顺序拼起来的结果（多片段用换行连接）。 */
+async function checkReviewerPersona(spec, declaration, entry) {
+  const persona = entry.resolvedConfig?.prefix
   const parts = []
-  let broken = false
   for (const part of spec.persona) {
     try {
       const text = await readFile(part.file, 'utf8')
       if (text.trim().length === 0) {
-        fail(`行 ${entry.at}（${toolName}）的人设文件是空的：${part.file}`)
-        broken = true
-        break
+        fail(`审读员 ${spec.presetId} 的人设文件是空的：${part.file}`)
+        return
       }
       parts.push({ part, text })
     } catch (error) {
-      fail(`行 ${entry.at}（${toolName}）的人设文件读不到：${part.file}：${error.message}`)
-      broken = true
-      break
+      fail(`审读员 ${spec.presetId} 的人设文件读不到：${part.file}：${error.message}`)
+      return
     }
   }
-  if (broken) continue
   if (typeof persona !== 'string' || persona.length === 0) {
-    fail(`行 ${entry.at}（${toolName}）的 persona 没读出来（得到 ${JSON.stringify(persona)?.slice(0, 40)}）`)
-    continue
+    fail(`审读员 ${spec.presetId} 的 persona 没读出来（得到 ${JSON.stringify(persona)?.slice(0, 40)}）——`
+      + '人设必须由那一行的 !!js 在挂载时从包内文件读出')
+    return
   }
   const expected = parts.map(({ text }) => text).join(String.fromCharCode(10))
   if (persona !== expected) {
     const reversed = [...parts].reverse().map(({ text }) => text).join(String.fromCharCode(10))
     if (parts.length > 1 && persona === reversed) {
-      fail(`行 ${entry.at}（${toolName}）的 persona 把顺序拼反了：必须是**`
+      fail(`审读员 ${spec.presetId} 的 persona 把顺序拼反了：必须是**`
         + `${parts.map(({ part }) => part.label).join('在前、')}在后**`
         + '——契约的使用说明要求"先读作者要求、再完整读正文、最后对照契约"，而 persona 在 system prompt 最前')
     } else if (parts.length === 1) {
-      fail(`行 ${entry.at}（${toolName}）的 persona 与 ${parts[0].part.label} 的内容不一致`
+      fail(`审读员 ${spec.presetId} 的 persona 与 ${parts[0].part.label} 的内容不一致`
         + `（persona ${persona.length} 字符，文件 ${expected.length} 字符）——人设必须逐字来自它自己那份文件`)
     } else {
-      fail(`行 ${entry.at}（${toolName}）的 persona ≠ ${parts.map(({ part }) => part.label).join(' + 换行 + ')}`
+      fail(`审读员 ${spec.presetId} 的 persona ≠ ${parts.map(({ part }) => part.label).join(' + 换行 + ')}`
         + `（persona ${persona.length} 字符，应为 ${expected.length} 字符）`)
     }
-    continue
+    return
   }
   // 单片段时沿用既有的短报告（`= b1-cold-read.md`）；多片段时把每段的长度都列出来——那样
   // "少拼了契约"在绿色输出里也看得见（少一段，行里就少一个 `+ 换行 +`）。拼法与旧版逐字相同。
   notes.push(parts.length === 1
-    ? `  ${toolName}: persona ${persona.length} 字符 = ${parts[0].part.label}`
-    : `  ${toolName}: persona ${persona.length} 字符 = `
+    ? `  ${spec.toolName}: persona ${persona.length} 字符 = ${parts[0].part.label}`
+    : `  ${spec.toolName}: persona ${persona.length} 字符 = `
       + parts.map(({ part, text }) => `${part.label}（${text.length}）`).join('+ 换行 + '))
 }
 
-// ── 5. 工具名账本 ───────────────────────────────────────────────────────────
-
-/** 从包的入口文件里抽出**候选**工具名；候选还要过 `packageDeclaresToolName` 才算数。 */
-async function toolNamesFromPackage(packageName) {
-  const entryPath = harnessRequire.resolve(`${packageName}/package.json`)
-  const pkg = JSON.parse(await readFile(entryPath, 'utf8'))
-  const modulePath = fileURLToPath(new URL(packageEntry(pkg), pathToFileURL(entryPath)))
-  const source = await readFile(modulePath, 'utf8')
-  const names = new Set()
-  for (const match of source.matchAll(/\bname:\s*["']([a-z][a-z0-9_]*)["']/g)) names.add(match[1])
-  return names
-}
-
-/**
- * 某个包（含它的子路径入口）里是否真的注册过这个工具名。
- *
- * `list_agents` 住在 `…/list-agents` 子路径入口里，只扫主入口会漏掉它——而
- * `tools.restrict()` 对未知名字抛错，漏掉的后果是"脚本说安全、派发却直接失败"。
- */
-async function packageDeclaresToolName(packageName, toolName) {
-  const entryPath = harnessRequire.resolve(`${packageName}/package.json`)
-  const pkg = JSON.parse(await readFile(entryPath, 'utf8'))
-  const directory = dirname(entryPath)
-  const files = new Set()
-  const addFile = (absolute) => { if (absolute.endsWith('.js')) files.add(absolute) }
-  const fromSpecifier = (specifier) => {
-    try {
-      addFile(harnessRequire.resolve(specifier))
-    } catch { /* 子路径可能不是文件导出，忽略 */ }
+for (const spec of PROFILE.reviewers) {
+  const declaration = declarationByPresetId.get(spec.presetId)
+  if (declaration === undefined) continue // 缺声明上面已经报过
+  const children = childEntries.filter((entry) => entry.declaration === declaration)
+  if (children.length !== READER_ROWS.length) {
+    fail(`审读员 preset ${spec.presetId} 的子行应为 ${READER_ROWS.length} 行`
+      + `（${READER_ROWS.map((row) => row.id).join('、')}），实际 ${children.length} 行：`
+      + `${children.map((entry) => entry.path).join('、') || '（无）'}${readerRowNote}`)
   }
-  addFile(join(directory, 'lib', 'index.js'))
-  for (const subpath of Object.keys(pkg.exports ?? {})) {
-    if (subpath === '.') continue
-    if (typeof pkg.exports[subpath] === 'string') fromSpecifier(`${packageName}/${subpath.replace(/^\.\//, '')}`)
+  for (const expected of READER_ROWS) {
+    const child = children.find((entry) => entry.path === expected.id)
+    if (child === undefined) {
+      fail(`审读员 preset ${spec.presetId} 里缺少 ${expected.id} 行（${expected.name}）${readerRowNote}`)
+      continue
+    }
+    if (child.row.name !== expected.name) {
+      fail(`审读员 preset ${spec.presetId} 的 ${expected.id} 行 name 应为 ${expected.name}，`
+        + `实际 ${JSON.stringify(child.row.name)}`)
+    }
+    if (child.group === true) {
+      fail(`审读员 preset ${spec.presetId} 的 ${expected.id} 行是分组行——只读组合是三行平铺子插件`)
+    }
+    if (child.disabledValue === true) {
+      fail(`审读员 preset ${spec.presetId} 的 ${expected.id} 行被 disabled——它在挂载时静默消失，只读组合就名存实亡`)
+    }
   }
-  try {
-    const lib = join(directory, 'lib')
-    for (const name of await readdir(lib)) {
-      if (name.endsWith('.js')) files.add(join(lib, name))
-      if (name === 'types') {
-        for (const nested of await readdir(join(lib, 'types'))) {
-          if (nested.endsWith('.js')) files.add(join(lib, 'types', nested))
-        }
+  for (const child of children) {
+    if (!READER_ROWS.some((row) => row.id === child.path)) {
+      fail(`审读员 preset ${spec.presetId} 多出子行 ${child.path}（${child.row.name}）${readerRowNote}`)
+    }
+  }
+
+  const personaRow = children.find((entry) => entry.path === 'persona')
+  if (personaRow !== undefined) await checkReviewerPersona(spec, declaration, personaRow)
+
+  const fsRow = children.find((entry) => entry.path === 'tool-fs')
+  if (fsRow !== undefined) {
+    const config = fsRow.resolvedConfig ?? {}
+    // 四项必须**逐个写出**：不写就吃到默认值（read/readImage/write/edit 全开）——
+    // 那是"审读员拿到写/编辑工具"最隐蔽的一条路径，文件里看不出任何多余行。
+    for (const [key, value] of Object.entries({ read: true, readImage: true, write: false, edit: false })) {
+      if (config[key] !== value) {
+        fail(`审读员 preset ${spec.presetId} 的 tool-fs.${key} 应为 ${String(value)}，`
+          + `实际 ${JSON.stringify(config[key])}——四个开关必须逐个写明确：不写就默认全开，审读员会拿到写与编辑工具`)
       }
     }
-  } catch { /* 包布局不同就以已收集的文件为准 */ }
-  const needle = new RegExp(`\\bname:\\s*["']${toolName}["']`)
-  for (const file of files) {
-    try {
-      if (needle.test(await readFile(file, 'utf8'))) return true
-    } catch { /* 读不到就换下一个 */ }
   }
-  return false
+
+  const searchRow = children.find((entry) => entry.path === 'tool-fs-search')
+  if (searchRow !== undefined) {
+    const value = (searchRow.resolvedConfig ?? {}).sampleOverCapGlobResults
+    if (value !== false) {
+      fail(`审读员 preset ${spec.presetId} 的 tool-fs-search.sampleOverCapGlobResults 应为 false`
+        + `（schema 必填项），实际 ${JSON.stringify(value)}`)
+    }
+  }
 }
 
-const TOOL_ROWS = compositionRows.filter((entry) => typeof entry.row.name === 'string'
-  && entry.row.name.startsWith('@deepseek-ai/dsh-tool-'))
-const toolLedger = new Set()
+// ── 5. 审读员工具行：provider / toolName / agentPreset，且没有 0.1.7 遗留字段 ──
+//
+// 0.2.1 的 `tool-subagent` 每行 = 一个 backend + 一个工具名；孩子的人设与工具面来自
+// `agentPreset`。这一节钉住三件事，每一件错了都不在装配时报错、只在派发时静默变形：
+//   * `provider` 必须是 spawn（fork 继承上下文，读者看过底牌）；
+//   * 审读员行必须有 `agentPreset` 且指到本档位声明的审读员 id（漏写 = 继承主模式的全部工具）；
+//   * 不许带 persona/toolFilter/backgroundMode——前两项 0.2.1 硬报错，第三项会被静默忽略。
+const TOOL_SUBAGENT_PACKAGE = '@deepseek-ai/dsh-tool-subagent'
+// 0.2.1 `dsh-tool-subagent` 的 Config 字段。白名单是刻意的：未知字段 schema 会忽略，
+// 而"0.1.7 遗留字段"正是这样进入文件、在运行时表现成挂载失败或语义悄悄变化。
+const TOOL_SUBAGENT_KEYS = new Set([
+  'provider', 'toolName', 'modelSelectionSettings', 'agentOptions', 'agentPreset', 'allowedAgentPresets', 'maxDepth',
+])
+const LEGACY_TOOL_FIELDS = new Set(['persona', 'toolFilter', 'backgroundMode'])
+const toolRows = mainChildren.filter((entry) => entry.row.name === TOOL_SUBAGENT_PACKAGE)
+const reviewerToolRows = new Map()
+const genericToolRows = []
 
-for (const entry of TOOL_ROWS) {
-  const packageName = entry.row.name.split('/').slice(0, 2).join('/')
+for (const entry of toolRows) {
   const config = entry.resolvedConfig ?? {}
-  // 只检查**名字字段**：`provider: spawn`、`backgroundMode: continuable` 里的
-  // 裸词恰好也是小写标识符，不排除掉就会把它们算成工具名。
-  const candidates = []
-  const add = (value) => { if (typeof value === 'string' && /^[a-z][a-z0-9_]*$/.test(value)) candidates.push(value) }
-  // config 里显式给的工具名由构造保证会被注册（插件就按它注册）；源码里抽出来的
-  // 候选必须先确认真的注册过——源码正文里出现一个词不等于它是一个工具。
-  const configDeclared = typeof config.toolName === 'string' ? config.toolName : null
-  if (configDeclared !== null) add(configDeclared)
-  if (packageName.endsWith('subagent-control')) { add('send_message'); add('interrupt_agent'); add('list_agents') }
-  if (!packageName.endsWith('tool-subagent')) {
-    for (const name of await toolNamesFromPackage(packageName)) add(name)
+  if (entry.disabledValue === true) {
+    fail(`工具行 ${entry.at} 被 disabled——它会静默消失，模型侧少一件工具而没有报错`)
   }
-  const declared = []
-  for (const name of [...new Set(candidates)]) {
-    if (name === configDeclared || await packageDeclaresToolName(packageName, name)) declared.push(name)
-  }
-  for (const name of declared) toolLedger.add(name)
-  notes.push(`工具行 ${entry.at}：${declared.length > 0 ? declared.join(', ') : '**没确认到任何工具名**'}`)
-  if (declared.length === 0) fail(`行 ${entry.at}（${entry.row.name}）没能确认它注册的工具名，本脚本无法判断 toolFilter 是否安全`)
-}
-
-if (!toolLedger.has('read') || !toolLedger.has('write')) {
-  die('工具账本没确认到 fs 的 read/write，本脚本无法判断 toolFilter 的名字是否正确')
-}
-notes.push(`工具账本共 ${toolLedger.size} 个名字（每个都确认过注册在它那一行所属的包里）`)
-
-const seenTool = new Set()
-for (const entry of compositionRows) {
-  const name = entry.resolvedConfig?.toolName
-  if (typeof name !== 'string') continue
-  if (seenTool.has(name)) fail(`工具名重复：${name}（两行会抢同一个名字）`)
-  seenTool.add(name)
-}
-
-// ── 6. toolFilter 只能点名"本组合真正注册过"的工具 ──────────────────────────
-//
-// `tools.restrict()` 对**未知**工具名抛错（allow 与 deny 都查，源码里
-// `[...allow ?? [], ...deny ?? []].filter(name => !known.has(name))`），而它抛在子代理的
-// 创建窗口里——那次派发直接失败。所以这里只能证明两件事：名字在它所属的包里被注册过，
-// 且那个包有一行在本组合里。剩下的一小步（该行在会话里真的激活了）只能靠真实会话来确认。
-for (const entry of compositionRows) {
-  const filter = entry.resolvedConfig?.toolFilter
-  if (filter === undefined) continue
-  for (const kind of ['allow', 'deny']) {
-    for (const name of filter[kind] ?? []) {
-      if (!toolLedger.has(name)) {
-        fail(`行 ${entry.at} 的 toolFilter.${kind} 点名了本组合不提供的工具 "${name}"——`
-          + '若它也不在全局层，tools.restrict() 会在子代理创建时抛错，那次派发会直接失败')
-      }
+  for (const key of Object.keys(config)) {
+    if (TOOL_SUBAGENT_KEYS.has(key)) continue
+    if (LEGACY_TOOL_FIELDS.has(key)) {
+      fail(`工具行 ${entry.at}（${JSON.stringify(config.toolName)}）带 0.1.7 遗留字段 ${key}——`
+        + '0.2.1 里 persona/toolFilter 是**硬报错**（挂载即失败、整个模式 broken），'
+        + 'backgroundMode 会被静默忽略（每次派发都是后台受管 activation，没有前台/可续接开关）')
+    } else {
+      fail(`工具行 ${entry.at} 的 config 里有本脚本不认识的字段 ${key}——`
+        + `tool-subagent 的 Config 只有 ${[...TOOL_SUBAGENT_KEYS].join('、')}；多出来的字段不报错也不生效`)
     }
   }
-}
-
-// ── 7. 审读员：可复用、只读、各有专用工具名 ─────────────────────────────────
-//
-// 只读判定**不能只看 allow**：`allow` 缩小可见集合，`deny` 再减一次。所以这里
-// 同时要求两个方向都对——放行的每一项都在只读白名单里，写入与再委派工具被显式拒掉。
-const BANNED = ['write', 'edit', 'present', 'subagent', 'send_message', 'interrupt_agent', 'list_agents']
-const READ_ONLY_ALLOW = new Set(['read', 'read_image', 'str_replace_editor', 'glob', 'grep'])
-
-if (reviewers.length !== PROFILE.reviewers.length) {
-  fail(`审读员行应有 ${PROFILE.reviewers.length} 个，实际 ${reviewers.length} 个`)
-}
-for (const { toolName } of PROFILE.reviewers) {
-  if (!reviewers.some((entry) => entry.resolvedConfig.toolName === toolName)) {
-    fail(`缺少审读员行 ${toolName}——本档位的角色表点了名，而它没有自己的工具`)
+  if (config.provider === 'fork') {
+    fail(`工具行 ${entry.at} 用了 provider: fork——fork 继承主代理的全部上下文，读者看过底牌就不再是读者证据`)
+  } else if (config.provider !== 'spawn') {
+    fail(`工具行 ${entry.at} 的 provider 是 ${JSON.stringify(config.provider)}，应为 spawn`
+      + '（0.2.1 每次派发都是独立上下文的后台 activation）')
   }
-}
-// 「本档位**不该**出现的审读员工具名」单独查一遍：精简版没有 b1…b5 这五个角色工具，
-// 名字要是漏进来（复制完整版那一行时最容易发生），模型就会照着一个不存在的工具去派发。
-// 查的是**解析后的工具名**，不是原文——补丁注释里正解释着"本模式没有这些工具"（见档位表）。
-if (PROFILE.forbiddenReviewerPattern !== null) {
-  for (const entry of compositionRows) {
-    const name = entry.resolvedConfig?.toolName
-    if (typeof name === 'string' && PROFILE.forbiddenReviewerPattern.test(name)) {
-      fail(`行 ${entry.at} 的工具名 "${name}" 是本档位刻意不要的——精简版只有一位合并审读员 `
-        + `（${PROFILE.reviewers.map((item) => item.toolName).join('、')}），五个角色化工具不存在`)
-    }
-  }
-}
-
-for (const entry of reviewers) {
-  const { toolName, toolFilter, backgroundMode, provider } = entry.resolvedConfig
-  // 可复用模式（continuable）下才调用 `subagents.startContinuable()`，才拿得到持久 childId；
-  // one-shot 是"派一次、从头读一遍、报完就没了"，改稿后的复核只能再派一位全新读者。
-  if (backgroundMode !== 'continuable') {
-    fail(`行 ${entry.at}（${toolName}）的 backgroundMode 是 ${JSON.stringify(backgroundMode)}，审读员必须是 continuable——`
-      + '否则改稿复核拿不到 childId，只能每次重派一位冷读者')
-  }
-  if (provider !== 'spawn') {
-    fail(`行 ${entry.at}（${toolName}）的 provider 是 ${JSON.stringify(provider)}，应为 spawn`)
-  }
-  if (toolFilter === undefined) {
-    fail(`行 ${entry.at}（${toolName}）没有 toolFilter——只读会退回成提示词约束`)
+  const toolName = config.toolName
+  if (toolName === PROFILE.main.genericToolName) {
+    genericToolRows.push(entry)
     continue
   }
-  const allowed = toolFilter.allow ?? []
-  const denied = toolFilter.deny ?? []
-  if (allowed.length === 0) fail(`行 ${entry.at}（${toolName}）的 toolFilter.allow 是空的`)
-  for (const name of allowed) {
-    if (!READ_ONLY_ALLOW.has(name)) fail(`行 ${entry.at}（${toolName}）放行了非只读工具 "${name}"`)
+  if (PROFILE.reviewers.some((spec) => spec.toolName === toolName)) {
+    reviewerToolRows.set(toolName, entry)
+    continue
   }
-  // 放行集合按档位**逐项相等**（不是"包含"就够了）：完整版与精简版的差别正是"少一个
-  // `str_replace_editor`"，包含式检查看不出这个差别，而它恰恰是精简版的核心取舍。
-  const sortedExpected = [...PROFILE.reviewerAllow].sort().join('\u0000')
-  if ([...allowed].sort().join('\u0000') !== sortedExpected) {
-    fail(`行 ${entry.at}（${toolName}）的 toolFilter.allow 应为 [${PROFILE.reviewerAllow.join(', ')}]，`
-      + `实际 [${allowed.join(', ')}]${PROFILE.reviewerAllowNote}`)
-  }
-  for (const name of BANNED) {
-    if (allowed.includes(name)) fail(`行 ${entry.at}（${toolName}）把 "${name}" 放进了 allow`)
-    if (!denied.includes(name)) fail(`行 ${entry.at}（${toolName}）没有显式 deny "${name}"`)
-  }
-  if (allowed.includes('skill')) {
-    fail(`行 ${entry.at}（${toolName}）允许了 skill；契约应拼进审读员自己的 persona，其余角色不该读技能`)
+  // 名字敲错（`subagent_reviei_b1`）会静默少一位读者，而且它不会被算进"审读员行"，
+  // 只按档位点名筛的话这一行会直接消失——所以这里按"不属于任何一类"报错。
+  fail(`工具行 ${entry.at} 的 toolName 是 ${JSON.stringify(toolName)}——本档位的 tool-subagent 行`
+    + `只有通用 ${PROFILE.main.genericToolName} 与审读员 ${PROFILE.reviewerToolNameHint}`)
+}
+
+if (genericToolRows.length !== 1) {
+  fail(`通用出口（toolName: ${PROFILE.main.genericToolName}）应有且只有 1 行，实际 ${genericToolRows.length} 行`
+    + '——它不写 agentPreset，孩子加入父代理当前的 preset 修订，是"再找一双眼睛"的唯一出口')
+}
+for (const entry of genericToolRows) {
+  if (entry.resolvedConfig?.agentPreset !== undefined) {
+    fail(`通用出口 ${entry.at} 写了 agentPreset: ${JSON.stringify(entry.resolvedConfig.agentPreset)}——`
+      + '它有意不写：孩子继承父代理当前的 preset（带着整套写作工具），才适合查资料、核对设定；'
+      + '钉到一个审读员 preset 会把它静默变成第六个只读读者')
   }
 }
 
-// 委派链路的两个前提：命名工具与子路径行都在组合里，且这个模式刻意不开 fork
-// （fork 会把主代理的大纲与写作推理一起复制给读者，审读独立性立刻消失）。
-// 缺的是哪几行按档位取（两个档位都要这两行），两行少一行就少一件工具，复用就断了。
-for (const required of PROFILE.requiredRowNames) {
-  if (!compositionRows.some((entry) => entry.row.name === required)) {
-    fail(`组合里没有 ${required} 那一行——send_message / list_agents 少一个，审读员就复用不起来`)
+for (const spec of PROFILE.reviewers) {
+  const entry = reviewerToolRows.get(spec.toolName)
+  if (entry === undefined) {
+    fail(`缺少审读员工具行 toolName: ${spec.toolName}——本档位角色表点了名，而它没有自己的工具`
+      + `（应写 provider: spawn、toolName: ${spec.toolName}、agentPreset: ${spec.presetId}）`)
+    continue
+  }
+  const config = entry.resolvedConfig ?? {}
+  if (config.agentPreset === undefined) {
+    fail(`审读员工具行 ${entry.at}（${spec.toolName}）没有 agentPreset——0.2.1 删掉了 persona/toolFilter，`
+      + '孩子的人设与只读工具面**只能**来自 agentPreset 指向的声明；不写就是继承主模式，'
+      + '审读员会拿到写文件、精确编辑器、技能与再委派工具')
+    continue
+  }
+  if (config.agentPreset !== spec.presetId) {
+    fail(`审读员工具行 ${entry.at}（${spec.toolName}）的 agentPreset 是 ${JSON.stringify(config.agentPreset)}，`
+      + `应指向 ${spec.presetId}`)
   }
 }
-// 档位**刻意不要**的行与工具名（精简版砍掉 `tool-web` / `tool-goal`：它们各带 2–3 个 schema，
-// 每轮都在前缀里，而短篇写作很少用）。这两个方向都要查：只查"缺了什么"的话，顺手把整行加回来
-// 不会被拦——那会把每轮前缀重新撑大，而功能上没人会发现多了什么。
-for (const forbidden of PROFILE.forbiddenRowNames) {
-  if (compositionRows.some((entry) => entry.row.name === forbidden || entry.row.name.startsWith(`${forbidden}/`))) {
-    fail(`组合里出现了本档位刻意不要的 ${forbidden} 那一行——精简版砍掉它是设计意图（见补丁文件头），不是漏了`)
+// 每个 agentPreset 都必须指到本档位声明的审读员：指到不存在的 id 会让整行在挂载时 broken；
+// 指到主模式自己会成环（孩子又拿到主模式）。已声明的审读员由上面的存在性检查保证。
+for (const entry of toolRows) {
+  const presetId = entry.resolvedConfig?.agentPreset
+  if (typeof presetId !== 'string') continue
+  if (!PROFILE.reviewers.some((spec) => spec.presetId === presetId)) {
+    fail(`工具行 ${entry.at} 的 agentPreset ${JSON.stringify(presetId)} 不是本档位声明的审读员 preset`
+      + `（应为 ${PROFILE.reviewers.map((spec) => spec.presetId).join('、')}）`)
   }
-}
-for (const forbidden of PROFILE.forbiddenToolNames) {
-  if (toolLedger.has(forbidden)) {
-    fail(`工具账本里出现了本档位刻意不要的 "${forbidden}"——它属于精简版砍掉的工具行，`
-      + '砍掉是设计意图（每轮前缀少 5 个 schema），不要"补"回来')
-  }
-}
-for (const entry of compositionRows) {
-  if (entry.resolvedConfig?.provider === 'fork') {
-    fail(`行 ${entry.at} 用了 provider: fork——fork 继承主代理的全部上下文，读者看过底牌就不再是读者证据`)
-  }
-}
-if (reviewers.length > 0) {
-  notes.push(`审读员 ${reviewers.length} 行：backgroundMode=continuable、provider=spawn、只看不写、`
-    + 'allow 只列读类工具、deny 拿掉写入与再委派')
 }
 
-// ── 8. 静态形状与可移植性 ───────────────────────────────────────────────────
+// 整份补丁的 YAML 里不得出现 `toolFilter:` / `backgroundMode:`。查的是**去掉注释后的
+// 配置行**：文件头用大量注释解释"为什么删掉这两项"，那是说明不是配置。行首（缩进后）
+// 出现就是 0.1.7 的写法漏回来了——persona/toolFilter 会让挂载直接抛错。
+for (const field of ['toolFilter', 'backgroundMode']) {
+  const pattern = new RegExp(`^\\s*(?:-\\s*)?${field}\\s*:`)
+  raw.split(/\r?\n/).forEach((line, index) => {
+    const code = stripComment(line)
+    if (pattern.test(code)) {
+      fail(`第 ${index + 1} 行的配置里出现了 0.1.7 遗留字段 ${field}：${code.trim()}——`
+        + '0.2.1 没有这个配置项（persona/toolFilter 是硬报错，backgroundMode 会被静默忽略），'
+        + '整份补丁里一个都不该有')
+    }
+  })
+}
+
+// 精简版**刻意不要**的角色工具名：只扫**解析后的 toolName**，不扫原文——补丁注释里正
+// 解释着"本模式没有 subagent_review_b* 工具"（见档位表）。
+if (PROFILE.forbiddenReviewerPattern !== null) {
+  for (const entry of childEntries) {
+    const name = entry.resolvedConfig?.toolName
+    if (typeof name === 'string' && PROFILE.forbiddenReviewerPattern.test(name)) {
+      fail(`行 ${entry.at} 的工具名 ${JSON.stringify(name)} 是本档位刻意不要的——精简版只有一位合并审读员`
+        + `（${PROFILE.reviewers.map((spec) => spec.toolName).join('、')}），五个角色化工具不存在`)
+    }
+  }
+}
+
+// 工具名不能重复：两行抢同一个名字＝后挂载的那一行被静默替换（模型侧只看到一件工具）。
+const seenToolNames = new Map()
+for (const entry of allEntries) {
+  const name = entry.resolvedConfig?.toolName
+  if (typeof name !== 'string') continue
+  if (seenToolNames.has(name)) {
+    fail(`工具名重复：${name}（${seenToolNames.get(name)} 与 ${entry.at}）——两行会抢同一个名字，后挂载的静默覆盖前者`)
+  } else {
+    seenToolNames.set(name, entry.at)
+  }
+}
+
+notes.push(`审读员工具行 ${PROFILE.reviewers.length} 行：provider=spawn、toolName 各自独立、agentPreset 指向已声明的审读员 preset；`
+  + `通用出口 ${PROFILE.main.genericToolName} 不写 agentPreset`)
+
+// ── 6. 必须有的行与刻意不要的行 ─────────────────────────────────────────────
+//
+// 缺一行不一定报错，只会静默少一项能力：没有 control 行就没有 send_message / list_agents，
+// 复核与"找回 childId"就断了。精简版刻意砍掉的行则要**双向**钉住：只查"缺了什么"的话，
+// 顺手把整行加回来不会被拦——那会把每轮前缀重新撑大，而功能上没人会发现多了什么。
+for (const required of PROFILE.main.requiredRowNames) {
+  if (!mainChildren.some((entry) => entry.row.name === required)) {
+    fail(`主模式里没有 ${required} 那一行——send_message / list_agents 少一个，审读员就复用不起来`)
+  }
+}
+for (const forbidden of PROFILE.main.forbiddenRowNames) {
+  if (mainChildren.some((entry) => entry.row.name === forbidden || entry.row.name.startsWith(`${forbidden}/`))) {
+    fail(`主模式里出现了本档位刻意不要的 ${forbidden} 那一行——精简版砍掉它是设计意图（见补丁文件头），不是漏了`)
+  }
+}
+
+// ── 7. 静态形状与可移植性 ───────────────────────────────────────────────────
 //
 // 这一节查的都是"改错了要到别的机器上才发作"的东西：行的 name 永不被插值、包内路径
 // 不能写死成本机绝对路径、插进去的行只能是 loader 认得的 key。
 //
 // 关键约束（都是从 loader 源码里读出来的，见补丁文件头）：
-//   * **行的 `name` 永远不会被插值**，loader 只对 `config` 调 `interpolate()`，
-//     `disabled` 单独走 `disabledOf`。所以子行的 `name: !!js …` 会变成对象、整行报错。
+//   * **行的 `name` 永远不会被插值**，loader 只对 `config` 调 `interpolate()`
+//     （`disabled` 单独走 `disabledOf`）。所以子行的 `name: !!js …` 会变成对象、整行报错。
 //   * 子行的解析基准是 **profile 目录**，不是包目录。本包自己的插件行只能写裸包名
 //     `dsh-story-mode`（profile 的 node_modules 里就是它）；相对路径与 file:// 都会钉死安装位置。
 // 补丁只允许 `insert`：loader 认得的补丁 key 还有 id/name/config/group/disabled/inject/
@@ -1403,12 +1627,12 @@ for (const patch of authoritative) {
   }
   for (const key of Object.keys(patch)) {
     if (!ALLOWED_PATCH_KEYS.has(key)) {
-      fail(`补丁条目里有不认识的 key "${key}"——本包只插自己那一行；覆写别人的行会和官方抢行`
+      fail(`补丁条目里有不认识的 key "${key}"——本包只插自己的声明行；覆写别人的行会和官方抢行`
         + '（官方加字段就被静默抹掉），真要那么做先在这里把理由写清楚')
     }
   }
 }
-for (const entry of allRows) {
+for (const entry of allEntries) {
   for (const key of Object.keys(entry.row ?? {})) {
     if (!ALLOWED_ROW_KEYS.has(key)) {
       fail(`行 ${entry.at} 里有 loader 不认得的 key "${key}"——loader 会原样收下它（不报错也不生效），`
@@ -1431,9 +1655,9 @@ if (/^[ \t]*name:[ \t]*!!js/m.test(raw)) {
   die('行的 name 上写了 !!js——loader 只对 config 与 disabled 求值，name 从不被插值')
 }
 
-const ownRow = compositionRows.find((entry) => entry.at === 'story-tools')
+const ownRow = mainChild('story-tools')
 if (ownRow === undefined) {
-  fail('组合里没有 id: story-tools 的那一行——本包自己的插件（story_wordcount / story_lint 等）没被插进去')
+  fail('主模式里没有 id: story-tools 的那一行——本包自己的插件（story_wordcount / story_lint 等）没被插进去')
 } else if (ownRow.row.name !== 'dsh-story-mode') {
   fail(`id: story-tools 的 name 必须是**裸包名** dsh-story-mode（profile 的 node_modules 里就是它），`
     + `实际 ${JSON.stringify(ownRow.row.name)}`)
@@ -1458,23 +1682,25 @@ if (!existsSync(ownEntry)) {
   }
 }
 
-// 技能文档里的两条契约（只查最便宜、最容易在改稿时被删掉的两句）：
-// 派发一律走后台、改稿复核用 send_message 发回同一位读者。删掉它们，可复用就只是配置。
+// 入口技能里的两条新契约（只查最便宜、最容易在改稿时被删掉的两句）：每次派发立即返回
+// childId，改稿复核用 send_message 发回同一位读者。删掉它们，可复用就只是配置。
 // 查的是**本档位的入口技能**：精简版的流程规则住在 `skills-lite/short-story-lite/SKILL.md`，
 // 完整版那份 `skills/short-story/SKILL.md` 在精简会话里根本不挂（见补丁文件头第五条）。
-const entrySkill = join(ROOT, PROFILE.entrySkill)
+const entrySkill = join(ROOT, PROFILE.main.entrySkill)
 try {
   const text = await readFile(entrySkill, 'utf8')
   if (!text.includes('send_message')) {
-    fail(`${PROFILE.entrySkill} 没提 send_message——改稿复核要靠它发回同一位读者`)
+    fail(`${PROFILE.main.entrySkill} 没提 send_message——改稿复核要靠它发回同一位读者`)
   }
-  if (!text.includes('run_in_background: false')) {
-    fail(`${PROFILE.entrySkill} 没有 \`run_in_background: false\` 的警告——前台调用拿不到可复用的 childId`)
+  if (!text.includes('childId')) {
+    fail(`${PROFILE.main.entrySkill} 没有提 childId——0.2.1 每次派发都立即返回 childId，`
+      + '复核要靠它发回同一位读者；不写它，模型会以为派发是前台等待、或者复核时另起一位冷读者')
   }
 } catch (error) {
-  fail(`${PROFILE.entrySkill} 读不到：${error.message}`)
+  fail(`${PROFILE.main.entrySkill} 读不到：${error.message}`)
 }
-notes.push('静态形状：行名全是包标识符、包内路径无绝对路径与 file://、patch/行 key 在 loader 认得的集合里')
+notes.push('静态形状：行名全是包标识符、包内路径无绝对路径与 file://、patch/行 key 在 loader 认得的集合里、'
+  + '入口技能写明了 childId + send_message')
 
 // ── 输出 ────────────────────────────────────────────────────────────────────
 
@@ -1483,8 +1709,9 @@ out('')
 for (const note of notes) out(`- ${note}`)
 out('')
 if (failures.length === 0) {
-  out('全部通过：补丁形状正确、每个 !!js 可编译且未被 YAML 转义改写、每行 config 过插件自己的 schema、'
-    + '包内路径在临时解析环境里真的求得出来、toolFilter 只点名真实工具、审读员均可复用且只读。')
+  out('全部通过：补丁形状正确（声明行数、审读员行排在主模式之前）、每个 !!js 可编译且未被 YAML 转义改写、'
+    + '每行 config 过插件自己的 schema、审读员 preset 只挂只读组合（persona + tool-fs read/readImage + tool-fs-search）、'
+    + '工具行 provider/spawn 且 agentPreset 指得到、补丁里没有任何 0.1.7 遗留字段。')
   process.exit(0)
 }
 err(`有 ${failures.length} 项失败：`)

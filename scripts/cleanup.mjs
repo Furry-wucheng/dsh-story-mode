@@ -3,8 +3,12 @@
  *
  * ── 这个包不往你的 home 里装东西 ────────────────────────────────────────────
  *
- * 模式是包自己 `cordis.patch.yml` 里**插入的一行 preset 声明**：子插件列表写在
- * 那一行的 `config.plugins` 里，技能由同一行用 `customSkillDirs` 从包内挂载。
+ * 模式是包自己 `cordis.patch.yml` 里**插入的 preset 声明行**：主模式的子插件列表写在
+ * 主模式那一行的 `config.plugins` 里，技能由其中 `skill-filesystem` 行用
+ * `customSkillDirs` 从包内挂载。0.2.1 起每一位只读审读员也是独立的声明行
+ * （`story-review-b1` … `b5` 与精简版的 `story-review-merged`）——孩子的人设与工具面
+ * 由那个 preset 提供，主模式的工具行只用 `agentPreset` 指过去，不再有
+ * `persona` / `toolFilter` / `backgroundMode`。
  *
  * 所以 `dsh plugin add` 一步就完整可用，`dsh plugin remove` 一步就全部消失——
  * 两头都不需要本脚本，也没有"装完还要再跑一条命令"这回事。
@@ -61,7 +65,7 @@ const HERE = dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = dirname(HERE)
 const CHECK_ONLY = process.argv.includes('--check')
 
-/** 本模式的 preset id，也是旧安装（v1.0.1）的目录名。 */
+/** 本模式（完整版）的 preset id，也是旧安装（v1.0.1）的目录名。 */
 const PRESET_ID = 'short-story'
 /**
  * 本包声明的**全部** preset id。
@@ -69,9 +73,24 @@ const PRESET_ID = 'short-story'
  * 卸载前要清的是"悬空的默认模式"，而模式选择器里能选的**每个** id 都能被设成默认：
  * 只认完整版，选了精简版的人卸载后就会撞上同一个不可恢复的 `agent-preset/not-found`
  * （注册表找不到默认 id 时不会回退，而这条清理路径被卸载绕开了）。
- * 第一个是旧安装的目录名，`.agent-presets/<id>` 只有那一份。
+ *
+ * 0.2.1 起每一位审读员也是独立的 preset 声明（`story-review-b1` … `b5`，精简版一位
+ * `story-review-merged`）。它们同样会以「审读员（内部）」的名字出现在模式选择器里——
+ * 注册表没有隐藏字段——所以用户同样可能把其中一个设成默认。少认一个，卸载后就是同一个
+ * 不可恢复的失败形态，因此六个审读员 id 也必须一起认。
+ *
+ * 第一个是旧安装的目录名，`.agent-presets/<id>` 只有那一份（审读员角色没有旧副本）。
  */
-const PRESET_IDS = [PRESET_ID, 'short-story-lite']
+const PRESET_IDS = [
+  PRESET_ID,
+  'short-story-lite',
+  'story-review-b1',
+  'story-review-b2',
+  'story-review-b3',
+  'story-review-b4',
+  'story-review-b5',
+  'story-review-merged',
+]
 /** 声明 preset 的注册表条目 id：用户默认值写在它的 config 里。 */
 const REGISTRY_ROW_ID = 'agent-preset-registry'
 /** 文风契约在技能根下的目录名。 */

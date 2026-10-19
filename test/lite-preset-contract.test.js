@@ -45,96 +45,133 @@ const CONTRACT_FINGERPRINTS = [
   '不以词语命中或删除比例判定合格',
 ]
 
-/** insert 之后的整棵 preset 树；注释行去掉——注释解释"为什么"，不是配置。 */
-function presetBlock(patch) {
-  const start = patch.search(/^- insert:[ \t]*$/m)
-  assert.ok(start >= 0, '补丁必须有一个顶层 insert 层')
+/**
+ * 去注释后的补丁正文：注释解释"为什么"，不是配置。
+ *
+ * 0.1.7 的遗留字段（`toolFilter:` / `backgroundMode:`）在注释里被解释过很多次，
+ * 所以否定断言只该落在配置上。
+ */
+function codeOf(patch) {
   return patch
-    .slice(start)
     .split(/\r?\n/)
     .filter((line) => !line.trimStart().startsWith('#'))
     .join('\n')
 }
 
-/** 切出某一个具体子行（`- id: x` 到下一个 `- id:` 为止）：断言只落在它自己身上。 */
-function row(block, id) {
-  const found = block.match(new RegExp(`- id: ${id}\\n[\\s\\S]*?(?=\\n *- id: |$)`))
-  assert.ok(found, `精简层里缺了 ${id} 这一行`)
-  return found[0]
+/**
+ * 从补丁里切出指定缩进层级的 `- id:` 块（含它的 config 子行）。
+ *
+ * 0.2.1 的一份补丁插入了两行 preset 声明（合并审读员 + 精简主模式），所以断言要落在
+ * **那一行自己**身上：`- id: tool-fs` 在合并审读员的只读组合里与主模式的读写套件里
+ * 同时出现，按整份文件搜会把两者混在一起。
+ */
+function blocksAt(text, indent) {
+  const found = new Map()
+  const startPattern = new RegExp(`^ {${indent}}- id: (\\S+)\\s*$`)
+  let current = null
+  for (const line of text.split(/\r?\n/)) {
+    const start = line.match(startPattern)
+    if (start !== null) {
+      current = { id: start[1], lines: [line] }
+      found.set(start[1], current)
+      continue
+    }
+    const leading = line.length - line.trimStart().length
+    if (line.trimStart().startsWith('- ') && leading <= indent) current = null
+    else if (current !== null) current.lines.push(line)
+  }
+  return found
 }
 
-/** `allow: [a, b]` / `deny: [a, b]` → 工具名数组。 */
-function list(value) {
-  const raw = value.match(/\[([^\]]*)\]/)?.[1] ?? ''
-  return raw.split(',').map((name) => name.trim()).filter(Boolean)
+/** 取一份缩进层级的块内容；缺了就报错。 */
+function blockText(text, indent, id) {
+  const block = blocksAt(text, indent).get(id)
+  assert.ok(block, `精简层里缺了 ${id} 这一行`)
+  return block.lines.join('\n')
 }
 
-test('the lite patch inserts exactly one preset row and touches nothing else', async () => {
+
+test('the lite patch inserts exactly two preset rows: merged reviewer then the lite main mode', async () => {
   const patch = await read(COMPOSITION)
-  // 一个文件一个 preset：`scripts/verify-composition.mjs --preset lite` 与
-  // 本文件都只认"顶层 1 条 insert、insert 里 1 行"，多一块就整体失效。
+  // 一层补丁一个主模式：`scripts/verify-composition.mjs --preset lite` 与
+  // 本文件都只认"顶层 1 条 insert、insert 里 2 行声明（合并审读员 + 主模式）"。
   assert.equal((patch.match(/^- insert:[ \t]*$/gm) ?? []).length, 1, '精简层只允许一个 insert 层')
-  assert.equal((patch.match(/^ {4}- id: /gm) ?? []).length, 1, 'insert 里只允许一行 preset 声明')
+  assert.equal((patch.match(/^ {4}- id: /gm) ?? []).length, 2, '一位合并审读员 + 1 个主模式，不多不少')
+  assert.match(patch, /^ {4}- id: preset-short-story-review-merged$/m)
   assert.match(patch, /^ {4}- id: preset-short-story-lite$/m)
-  assert.match(patch, /^ {6}name: '@deepseek-ai\/dsh-agent-preset'$/m)
-  assert.match(patch, /^ {8}id: short-story-lite$/m, 'config.id 是会话保存的 preset 标识符')
-  const name = patch.match(/^ {8}name: (.*)$/m)?.[1]?.trim() ?? ''
+
+  const merged = blockText(patch, 4, 'preset-short-story-review-merged')
+  assert.match(merged, /^ {6}name: '@deepseek-ai\/dsh-agent-preset'$/m)
+  assert.match(merged, /^ {8}id: story-review-merged$/m, 'config.id 是工具行 agentPreset 的目标')
+  assert.match(merged, /^ {8}order: 111$/m, '审读员角色排在主模式之后')
+  assert.match(merged, /^ {8}name: .*内部.*$/m, '会出现在选择器里，名字要带「内部」')
+  assert.match(merged, /^ {8}description: .*不要直接选择/m)
+
+  const main = blockText(patch, 4, 'preset-short-story-lite')
+  assert.match(main, /^ {6}name: '@deepseek-ai\/dsh-agent-preset'$/m)
+  assert.match(main, /^ {8}id: short-story-lite$/m, 'config.id 是会话保存的 preset 标识符')
+  const name = main.match(/^ {8}name: (.*)$/m)?.[1]?.trim() ?? ''
   assert.ok(name.length > 0, 'config.name 不能为空：roster 里要显示它')
   assert.match(name, /精简/, `config.name 必须自报精简档，实际是 ${name}`)
-  assert.match(patch, /^ {8}description: \S/m, 'roster 里还要有非空的说明')
-  assert.match(patch, /^ {8}order: 6$/m, '完整版占 5，精简版排在它后面')
-  // 两层各声明自己的 id：同名会让后注册的那一层覆盖前一层。
+  assert.match(main, /^ {8}description: \S/m, 'roster 里还要有非空的说明')
+  assert.match(main, /^ {8}order: 6$/m, '完整版占 5，精简版排在它后面')
+
+  // 顺序是硬契约：tool-subagent 在挂载时校验 agentPreset 指向的声明已经注册。
+  assert.ok(
+    patch.indexOf('    - id: preset-short-story-review-merged\n') < patch.indexOf('    - id: preset-short-story-lite\n'),
+    '合并审读员的声明必须排在精简主模式之前',
+  )
+  // 两层各声明自己的主模式 id：同名会让后注册的那一层覆盖前一层。
   assert.doesNotMatch(patch, /^ {4}- id: preset-short-story$/m)
   assert.doesNotMatch(patch, /^ {8}id: short-story$/m)
 })
 
-test('the lite preset arms exactly one reviewer tool: read-only, spawn, continuable', async () => {
-  const block = presetBlock(await read(COMPOSITION))
+test('the lite preset arms exactly one reviewer: spawn plus agentPreset into the read-only preset', async () => {
+  const patch = await read(COMPOSITION)
+  const main = blockText(patch, 4, 'preset-short-story-lite')
   // 通用出口 `subagent` 留着是有意的（作者说"再找一双眼睛"时唯一的去处），
   // 但它不是审读员：精简层的审读只走 `subagent_review` 这一条。
-  const toolNames = [...block.matchAll(/toolName: (\S+)/g)].map((match) => match[1])
+  const toolNames = [...main.matchAll(/toolName: (\S+)/g)].map((match) => match[1])
   assert.deepEqual(toolNames, ['subagent', 'subagent_review'], '精简层的子代理工具面只有这两行')
-  const reviewers = [...block.matchAll(/toolName: (subagent_review\S*)/g)].map((match) => match[1])
+  const reviewers = [...main.matchAll(/toolName: (subagent_review\S*)/g)].map((match) => match[1])
   assert.deepEqual(reviewers, ['subagent_review'], '审读工具只能有一个，且不带角色后缀')
-  assert.equal((block.match(/toolFilter:/g) ?? []).length, 1, '只有审读行带工具过滤')
 
-  const review = row(block, 'tool-subagent-review')
+  const review = blockText(main, 10, 'tool-subagent-review')
   assert.match(review, /name: '@deepseek-ai\/dsh-tool-subagent'/, '审读员由 tool-subagent 包提供')
   assert.match(review, /provider: spawn/, 'spawn 后端才能零继承上下文地冷读')
-  assert.match(review, /backgroundMode: continuable/, '可续接才能把复核发回同一位读者')
+  assert.match(review, /agentPreset: story-review-merged/, '0.2.1 只认 agentPreset：孩子的人设与工具面来自那个 preset')
   assert.doesNotMatch(review, /provider:\s*fork/, 'fork 会把主代理的大纲与写作推理复制给读者')
   assert.doesNotMatch(review, /one-shot/, '一次性子代理每次复核都得从头读一遍全文')
+  // 0.1.7 的字段一个都不许留：persona/toolFilter 会让挂载直接抛错，backgroundMode 被静默忽略。
+  assert.doesNotMatch(review, /persona:|toolFilter:|backgroundMode:/, '工具行只写 provider/toolName/agentPreset')
+  assert.doesNotMatch(codeOf(patch), /toolFilter\s*:/)
+  assert.doesNotMatch(codeOf(patch), /backgroundMode\s*:/)
 
-  // allow 只列读类工具：`read` 已返回带行号正文，`glob` / `grep` 负责定位。
-  const allow = list(review.match(/allow: (\[[^\]]*\])/)?.[1] ?? '')
-  assert.deepEqual(allow, ['read', 'read_image', 'glob', 'grep'], '审读员的工具面只能是这四件')
-  // 允许 `str_replace_editor` 等于审读员**物理上可写**（view / create / str_replace / insert），
-  // 与"只读审读员"的说法不符；它的 schema 还占这个子代理工具面的一半以上。
-  // 所以它只能出现在解释"为什么不给"的注释里，配置里一个都不许有。
-  assert.ok(!allow.includes('str_replace_editor'), '审读员不能拿到任何可写的编辑器工具')
-  assert.doesNotMatch(block, /str_replace_editor/, 'str_replace_editor 只能出现在注释里解释为什么被排除')
-  const patch = await read(COMPOSITION)
-  const mentions = patch.split(/\r?\n/).filter((line) => line.includes('str_replace_editor'))
+  // 只读是**组合**保证的：审读员 preset 里只有三行，写入/编辑/交付/委派工具根本没挂载。
+  const merged = blockText(patch, 4, 'preset-short-story-review-merged')
+  const readerRows = blocksAt(merged, 10)
+  assert.deepEqual([...readerRows.keys()], ['persona', 'tool-fs', 'tool-fs-search'], '只读组合恰好三行')
+  assert.doesNotMatch(merged, /tool-str-replace-editor|tool-present|tool-skill|tool-subagent|compaction/,
+    '审读员 preset 里不该有写/编辑/交付/委派/技能/压缩的行')
+  const fsConfig = blockText(merged, 10, 'tool-fs')
+  assert.match(fsConfig, /read: true/)
+  assert.match(fsConfig, /readImage: true/)
+  assert.match(fsConfig, /write: false/, '不写就是默认 true，审读员会拿到写工具')
+  assert.match(fsConfig, /edit: false/, '不写就是默认 true，审读员会拿到编辑工具')
+  assert.match(blockText(merged, 10, 'tool-fs-search'), /sampleOverCapGlobResults: false/)
+
+  // 理由必须留在文件里：光看组合，下一个人会把"少了编辑器"当成遗漏补回去。
+  const patchText = await read(COMPOSITION)
+  const mentions = patchText.split(/\r?\n/).filter((line) => line.includes('str_replace_editor'))
   assert.ok(mentions.length > 0, '文件里必须保留"为什么审读员没有编辑器"的说明')
   for (const line of mentions) assert.match(line.trim(), /^#/, 'str_replace_editor 只该出现在注释里')
-  // 理由必须留在文件里：光看 allow 列表，下一个人会把"少了编辑器"当成遗漏补回去。
-  assert.match(patch, /str_replace_editor[\s\S]{0,120}就不是只读审读员/, '文件里必须说明"为什么审读员没有编辑器"')
-
-  // deny 是兜底：写入、呈现与再委派全部拿掉。`restrict()` 对未注册的工具名抛错，
-  // 所以这里只列本组合真实存在的名字，且必须逐个点名。
-  const deny = list(review.match(/deny: (\[[^\]]*\])/)?.[1] ?? '')
-  assert.deepEqual(
-    deny,
-    ['write', 'edit', 'present', 'subagent', 'send_message', 'interrupt_agent', 'list_agents'],
-    'deny 必须覆盖写入、呈现与再委派',
-  )
 })
 
 test('the merged reviewer persona reads the role file plus the shared contract, never a copy', async () => {
-  const block = presetBlock(await read(COMPOSITION))
-  const review = row(block, 'tool-subagent-review')
-  const persona = review.match(/persona: !!js "([^"]+)"/)?.[1]
-  assert.ok(persona, '审读行必须用 !!js 在挂载时从包内读人设')
+  const patch = await read(COMPOSITION)
+  const mergedBlock = blockText(patch, 4, 'preset-short-story-review-merged')
+  const persona = mergedBlock.match(/prefix: !!js "([^"]+)"/)?.[1]
+  assert.ok(persona, '审读员 preset 必须用 !!js 在挂载时从包内读人设')
   // 两个来源都要在表达式里：合并审读员说明 + 共用的文风契约全文。
   for (const part of ["'skills-lite'", "'references'", "'reviewer-merged.md'", "'skills', 'writing-style-contract'", "'SKILL.md'"]) {
     assert.ok(persona.includes(part), `persona 表达式必须读到 ${part}`)
@@ -158,8 +195,8 @@ test('the merged reviewer persona reads the role file plus the shared contract, 
 })
 
 test('the lite scope mounts two skill roots: the lite flow and the shared contract', async () => {
-  const block = presetBlock(await read(COMPOSITION))
-  const dirs = [...block.matchAll(/^ *- !!js "([^"]+)" *$/gm)].map((match) => match[1])
+  const main = blockText(await read(COMPOSITION), 4, 'preset-short-story-lite')
+  const dirs = [...main.matchAll(/^ *- !!js "([^"]+)" *$/gm)].map((match) => match[1])
   assert.equal(dirs.length, 2, '精简层恰好挂两个技能根')
   const liteRoot = dirs.find((dir) => dir.includes("'skills-lite'"))
   const contractRoot = dirs.find((dir) => dir.includes("'skills', 'writing-style-contract'"))
@@ -186,7 +223,9 @@ test('the lite skill is self-contained: no panel to read, one reviewer to reuse'
   const skill = await read(LITE_SKILL)
   assert.match(skill, /subagent_review/, '技能必须点名唯一那位审读员')
   assert.match(skill, /send_message/, '复核必须走 send_message 复用原读者')
-  assert.match(skill, /run_in_background: false/, '前台调用会退化成一次性会话，技能必须明令不要传')
+  // 0.2.1 的派发语义：每次调用立即返回 childId；没有 run_in_background 这个参数可传。
+  assert.match(skill, /childId/, '技能必须写明每次派发都会拿到可复用的 childId')
+  assert.doesNotMatch(skill, /run_in_background/, '0.2.x 没有 run_in_background，技能不该再提')
   // 精简版不读完整版的面板：那份规则文件对应的是本模式没有的五个角色工具。
   assert.doesNotMatch(skill, /references\/review-panel\.md/)
   assert.match(skill, /没有额外的派发面板要读/, '精简流程必须自足，否则模型会去找不存在的面板文件')
@@ -201,7 +240,7 @@ test('the lite skill is self-contained: no panel to read, one reviewer to reuse'
 })
 
 test('the lite preset deliberately drops the five role tools, the web and the goal toolkit', async () => {
-  const block = presetBlock(await read(COMPOSITION))
+  const block = codeOf(await read(COMPOSITION))
   // 五位角色化审读员只住在完整版那一层：精简层里一个都不许出现。
   assert.doesNotMatch(block, /subagent_review_b\d/, '精简层没有 subagent_review_b1..b5')
   assert.doesNotMatch(block, /tool-subagent-review-b\d/)
@@ -236,18 +275,19 @@ test('the merged reviewer keeps the judging rules the five roles each carried', 
 })
 
 test('the lite preset keeps every row this writing mode still depends on', async () => {
-  const block = presetBlock(await read(COMPOSITION))
+  const patch = await read(COMPOSITION)
+  const main = blockText(patch, 4, 'preset-short-story-lite')
   // 直接子行的清单本身就是契约：增删都是有意为之，谁改谁要在这里说清楚。
-  const childIds = [...block.matchAll(/^ {10}- id: (\S+)$/gm)].map((match) => match[1])
+  const childIds = [...main.matchAll(/^ {10}- id: (\S+)$/gm)].map((match) => match[1])
   assert.deepEqual(childIds, REQUIRED_ROWS, '精简层的子插件清单发生了变化')
   // compaction 的孩子在下一层：没有裁剪器，长稿会把上下文吃满（与完整版同一套）。
-  const groupIds = [...block.matchAll(/^ {14}- id: (\S+)$/gm)].map((match) => match[1])
+  const groupIds = [...main.matchAll(/^ {14}- id: (\S+)$/gm)].map((match) => match[1])
   assert.deepEqual(groupIds, REQUIRED_GROUP_ROWS, 'compaction 组的孩子变了')
-  const storyTools = row(block, 'story-tools')
+  const storyTools = blockText(main, 10, 'story-tools')
   assert.match(storyTools, /^\s*name: dsh-story-mode$/m, '本包自己的插件行写裸包名，不写路径')
   assert.match(storyTools, /sceneDriftPercent: 15/)
   assert.match(storyTools, /repeatThreshold: 3/)
   // `skill-filesystem` 的 customSkillDirs 是必填项之一，`sampleOverCapGlobResults` 也是。
-  assert.match(row(block, 'tool-fs-search'), /sampleOverCapGlobResults: false/)
-  assert.match(row(block, 'agent-instructions'), /maxBytes: 8192/, 'AGENTS.md 每轮注入，精简层收紧上限')
+  assert.match(blockText(main, 10, 'tool-fs-search'), /sampleOverCapGlobResults: false/)
+  assert.match(blockText(main, 10, 'agent-instructions'), /maxBytes: 8192/, 'AGENTS.md 每轮注入，精简层收紧上限')
 })

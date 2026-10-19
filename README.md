@@ -30,15 +30,17 @@
 dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 ```
 
-**就这一条。** 不需要第二步、不需要改任何配置文件。装完新建会话，模式选择器里就有「短篇小说模式」与「短篇小说模式（精简）」。（CLI 启动的 profile 下当场生效；桌面版若没看到，重启一次 DSH——它的 profile 组装只在启动与插件状态变更时跑，没有监听 bundles 的 watcher。）
+**就这一条。** 不需要第二步、不需要改任何配置文件。装完新建会话，模式选择器里就有「短篇小说模式」与「短篇小说模式（精简）」。同时你会看到另外六个「审读员（内部）」条目——那是 DSH 0.2.1 机制的一部分，原因和代价见下面「0.2.1 的新代价」一节，正常使用时不要选它们。（CLI 启动的 profile 下当场生效；桌面版若没看到，重启一次 DSH——它的 profile 组装只在启动与插件状态变更时跑，没有监听 bundles 的 watcher。）
 
 ### 它是怎么做到的
 
-模式是包内补丁 **插入的 preset 声明行**（插件 `@deepseek-ai/dsh-agent-preset`）——完整版一层、精简版一层，共两行。DSH 0.1.7 起 agent preset 不再是"扫描某个目录里的 `agent.cordis.yml`"，而是普通的 loader 行：注册表**既不扫描目录，也不接受预设路径**，新建或覆盖预设都靠 bundle 补丁插一行。那一行的 `config.plugins` 就是模式的全部子插件（人设、文件工具、精确编辑器、写作工具、技能、压缩、委派），`config.name` / `config.description` 是模式选择器里显示的文本。
+模式是包内补丁**插入的 preset 声明行**（插件 `@deepseek-ai/dsh-agent-preset`）。DSH 0.2.1 的 preset 注册表**不扫描目录、也不接受预设路径**：新建或覆盖预设都靠 bundle 补丁插一行。完整版那一层插 **6 行**——主模式 `preset-short-story`（`config.id: short-story`，`order: 5`）与五个只读审读员 preset `preset-short-story-review-b1` … `-b5`（`story-review-b1` … `b5`，`order: 101`–`105`）；精简版那一层插 **2 行**——主模式 `preset-short-story-lite`（`short-story-lite`，`order: 6`）与合并审读员 preset `preset-short-story-review-merged`（`story-review-merged`，`order: 111`）。`config.plugins` 是这个 preset 的全部子插件：完整版主模式是人设、文件工具、精确编辑器、写作工具、技能、压缩与委派；审读员 preset 只有人设、只读文件工具与搜索工具。`config.name` / `config.description` 是模式选择器里显示的文本。
+
+**为什么审读员也是一个 preset。** DSH 0.2.1 的 `@deepseek-ai/dsh-tool-subagent` 删掉了 `persona` 与 `toolFilter`（源码对这两项是硬报错，不是忽略），孩子的人设与工具面必须写在一个**命名的 agent preset** 里，调度工具行只写 `agentPreset: story-review-bN`。所以五位审读员各占一行声明，主模式里的 `tool-subagent-review-b*` 五条行用 `agentPreset` 指过去；精简版同理，一位合并审读员。**声明顺序是硬约束**：`tool-subagent` 在挂载时就校验 `agentPreset` 指向的声明是否存在，所以审读员行必须写在主模式行之前——顺序反了，整个主模式会变成 `broken` 行。
 
 于是没有任何"复制到 home"的步骤：patch 跟着包走，技能由各行用 `customSkillDirs` 从**包内**挂载（完整版一个根 `skills/`；精简版两个根：`skills-lite/` 与 `skills/writing-style-contract/`）。包内文件路径一律运行时算出——这也是社区插件（如 dsh-TUI）解决同一个问题的做法。
 
-**两条与 0.1.7 前相反的解析规则**（改这个文件前必须知道）：
+**两条反直觉的解析规则**（改这个文件前必须知道）：
 
 - **子插件行的名字写裸包名 `dsh-story-mode`。** preset 子插件的解析基准是 **profile 目录**，不是 patch 文件所在目录、也不是包目录；profile 的 `node_modules` 里就是本包（社区插件 `dshmarket`、`dsh-better-sidebar` 用的是同一条路）。相对路径 `./lib/index.js` 会按 profile 目录解析而找不到；`name: !!js …` 更不行——loader 只对 `config` 插值，`name` 会原样丢给 `import()`。
 - **包内文件路径在运行时问出来。** `!!js` 里的 `baseUrl` 现在是 profile 目录（解析锚点），不再是组合文件所在目录，所以每个读文件的行都先用 `createRequire(baseUrl).resolve('dsh-story-mode/package.json')` 拿到包根，再 `path.join`。官方组合（`dsh-web-app` 的 cordis 预设）用的也是这个写法。
@@ -48,24 +50,33 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 | | 短篇小说模式（`short-story`） | 短篇小说模式（精简）（`short-story-lite`） |
 |---|---|---|
 | 审读员 | 5 个角色工具：`subagent_review_b1` … `b5`，各自读一遍 | 1 个：`subagent_review`，冷读起点、一次读完五维、一份报告 |
+| 审读员 preset | 5 个只读声明：`story-review-b1` … `b5`（`order: 101`–`105`） | 1 个：`story-review-merged`（`order: 111`） |
 | 一次会话的子代理名额 | 6（自限） | 2（自限：审读员一位 + 通用出口一位） |
 | 常驻工具面 | 28 个工具（含 `subagent_review_b1…b5`、`web_*`、`*_goal`） | 19 个（1 个审读员；无 `web_*` / `*_goal`） |
 | 每轮前缀 | 约 24,000 字符 | 约 17,300 字符（少约 6,700 ≈ 1,700 token） |
 | 一次审读轮的阅读量 | 同一篇正文读 5 遍（10,000 字稿 ≈ 5 × 12,000 字符） | 读 1 遍（≈ 12,000 字符） |
-| 一次审读轮的总开销（阅读 + 人设 + 工具面 + 报告） | ≈ 103,000 字符（≈ 74k token） | ≈ 24,000 字符（≈ 17k token） |
+| 一次审读轮的总开销（阅读 + 人设 + 工具面 + 报告） | ≈ 5 ×（12,000 正文 + 2,400 工具面 + 人设 + 派发与报告）≈ 100,000 字符（≈ 72k token） | ≈ 24,000 字符（≈ 17k token） |
 | 技能 | `short-story` + 文风契约 | `short-story-lite` + 文风契约（同一份契约文件，不复制） |
 | 长程目标（`/goal`） | 有（`command-goal` + `tool-goal`） | **没有**：读/建/标记目标的工具都砍了，只留命令会留下一个"目标置为 armed 却收不回来"的坑 |
 | 适用 | 交付级审读、长篇、关系线复杂、要五维交叉验证、要目标管理 | 日常写作、快速迭代、长会话、token 敏感 |
 
-**数字是怎么来的**：审读子代理是独立 spawn 的（零继承上下文），所以每个孩子的固定成本里最大的一项是**再读一遍正文**——10,000 字中文稿 `read` 带行号返回约 12,000 字符（按 400 行左右的分行正文估）；五位读者就是同一篇正文读五遍。两个"总开销"数字是把子代理的工具面（只读工具约 2,400–5,200 字符）、人设、派发消息与报告上限都算进去的**每轮派发成本**，工具 schema 部分按已装构建的插件源码估算，误差约 ±15%。精简版不是"读得浅"，是省掉四遍重复读，并把五维覆盖留在同一份报告里：读不懂的地方、故事逻辑与关系依据、阅读体验与节奏、文风契约执行、动作与空间连续性。
+装的是同一个包，所以模式选择器里会同时出现两个写作模式与**六个**「审读员（内部）」条目（完整版 5 个 + 精简版 1 个）；它们只是自动派发的目标，不要直接选，原因见下文的「0.2.1 的新代价」。
+
+**数字是怎么来的**：审读子代理是独立 spawn 的（零继承上下文），所以每个孩子的固定成本里最大的一项是**再读一遍正文**——10,000 字中文稿 `read` 带行号返回约 12,000 字符（按 400 行左右的分行正文估）；五位读者就是同一篇正文读五遍。两个"总开销"数字是把子代理的工具面、人设、派发消息与报告上限都算进去的**每轮派发成本**；两种模式的审读员现在都只带 `read` / `read_image` / `glob` / `grep` 四件工具（约 2,400 字符），所以完整版约 5 ×（12,000 正文 + 2,400 工具面 + 人设 + 派发与报告）≈ 100,000 字符（≈ 72k token），精简版约 24,000 字符（≈ 17k token，里面含合并审读员人设拼进去的那份文风契约）。工具 schema 与人设长度都按已装构建估算，误差约 ±15%；五个孩子里 B4 最贵——它的 persona 除了角色说明，还拼着整份文风契约（约 4,300 字符）。精简版不是"读得浅"，是省掉四遍重复读，并把五维覆盖留在同一份报告里：读不懂的地方、故事逻辑与关系依据、阅读体验与节奏、文风契约执行、动作与空间连续性。
 
 **它换掉了什么（说清楚，免得踩空）**：
 
 - 五位读者之间的**交叉验证与冗余**没有了。精简版用"冷读起点"补偿了一部分——那位读者默认只拿正文，不拿人物卡、节拍、大纲和你的写作推理，所以"我没看懂"仍然是读者证据，而不是抄你的意图。但它确实只有一双眼睛：B5 的独立状态重建、B3 的独立节奏判断，都由同一位读者在同一遍阅读里给出。
 - **文风契约在精简版里是"尺子"而不是意图**：合并审读员既要冷读、也要对文风，所以契约（它写着"冷读者不读本契约"）会装进它的人设。人设里明确要求：先读完、判完其它四维，再拿契约定第 ④ 项的尺度，不用它预判剧情与人物；契约里提到 `short-story` 技能/审读面板的段落都指完整版。
-- **最终盲读要另起一位新读者**：重写或旧报告可能让原读者带入预期时，精简版的规则是再派一次 `subagent_review`（全新子代理、不给旧报告），而不是 `send_message` 复用——这条占掉第 2 个名额，所以"盲读"和"复审批次"二者按需取一。
+- **最终盲读要另起一位新读者**：重写或旧报告可能让原读者带入预期时，精简版的规则是再派一次 `subagent_review`（全新子代理、不给旧报告；调用立即返回一个新的 `started subagent <childId>`），而不是 `send_message` 复用——这条占掉第 2 个名额，所以"盲读"和"复审批次"二者按需取一。
 
 **要更严的审读时**：预设是**会话级**选择，中途不能切换。所以做法是给这一篇**另开一个完整版会话**，把稿子交给它做交付级审读（含五位角色、`/goal`）。精简版留在会话里的通用 `subagent` 不是审读替代品——它没有信息边界、也没有报告格式，只适合查资料或核对某条设定这类不属于独立审读的活。
+
+### 0.2.1 的新代价：模式选择器里多出六个「审读员（内部）」条目
+
+审读员在 0.2.1 里必须是命名的 agent preset，而 **preset 注册表没有"隐藏"字段**：一个 preset 一经声明，就会出现在模式选择器里。所以装好之后，选择器里除了两个写作模式，还会多出完整版的五个「短篇审读员 B1 · 冷读（内部）」…「B5 · 动作与空间（内部）」（`order: 101`–`105`，`config.id: story-review-b1` … `b5`）与精简版的一个「短篇审读员 · 合并五维（内部）」（`order: 111`，`config.id: story-review-merged`）。它们都排在最后、名字带「内部」、描述里写明"不要直接选择这个模式"。
+
+这是 0.2.1 机制的直接结果，不是本包的偏好：只要审读员要有固定人设与只读工具面，就必须是一个独立 preset；独立 preset 就会被列出来。误选的代价是有界的——进去的是一位只读读者，工具面只有 `read` / `read_image` / `glob` / `grep`，没有写、编辑、交付、委派工具，稿件不会因为误选被改；但你也得不到一个写作模式（它没有作者身份、`story_*` 工具与技能挂载）。注册表同样不禁止把审读员 preset 设为默认模式，所以卸载前的 `cleanup` 也认这六个 id：万一误设了，它会在卸载前把默认值清掉，避免 `agent-preset/not-found`。正常使用时请忽略这些条目；如果以后 DSH 给 preset 增加"内部/隐藏"标记，本包会跟着改用。
 
 ### 卸载
 
@@ -73,7 +84,7 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 dsh plugin --profile <你的 profile> remove dsh-story-mode
 ```
 
-**两个模式与它们自带的技能都跟着包一起走**，这些不需要任何清理——它们从来没被复制到你家里去过。（模式是包内两层 patch 各自插入的声明行，技能由 `customSkillDirs` 从包内挂载，所以它们只在这两个模式里可见。）
+**两个模式与它们自带的技能都跟着包一起走**，这些不需要任何清理——它们从来没被复制到你家里去过。（模式与审读员都是包内两层 patch 插入的声明行，技能由 `customSkillDirs` 从包内挂载，所以它们只在这两个模式的作用域里可见。）
 
 只有一件事要在卸载前确认：
 
@@ -89,19 +100,21 @@ dsh plugin --profile <你的 profile> exec dsh-story-mode cleanup
 
 为什么要跑：如果你在模式选择器里把**任一个**写作模式设成了**默认模式**，卸载包之后新建会话会直接以 `agent-preset/not-found` 失败——DSH 找不到默认 preset 时不会回退到 `standard`，而真正会顺手清掉这个默认值的那条路径被 `dsh plugin remove` 绕过了。这一步必须在卸载**之前**做，因为包一旦 remove，这个命令也就没了。
 
-（0.1.7 起这个默认值存在 `agent-preset-registry` 行的 volatile 字段 `selectedDefault` 上，由 loader 写回 profile 的 `cordis.patch.yml`；`cleanup` 只删那一行，不动文件里的其他内容，并且**两个写作模式的 id 都认**——只认完整版的话，选了精简版当默认的人卸载后会撞上同一个 `agent-preset/not-found`。它顺带清掉两处历史残留：v1.0.1 复制到 `<DSH_HOME>/.agent-presets/short-story` 的模式副本，以及 v1.0.1／v1.0.2 曾可选安装的 `<DSH_HOME>/skills/writing-style-contract` 副本——后者只在带 `.dsh-story-mode.json` 归属标记时才删，绝不会误伤你自己手写的同名技能。不是本包放的东西一律不动。）
+（这个默认值存在 `agent-preset-registry` 行的 volatile 字段 `selectedDefault` 上，由 loader 写回 profile 的 `cordis.patch.yml`；`cleanup` 只删那一行，不动文件里的其他内容，并且**本包声明的全部 preset id 都认**（两个写作模式与六个审读员 preset）——只认完整版的话，选了精简版当默认的人卸载后会撞上同一个 `agent-preset/not-found`。它顺带清掉两处历史残留：v1.0.1 复制到 `<DSH_HOME>/.agent-presets/short-story` 的模式副本，以及 v1.0.1／v1.0.2 曾可选安装的 `<DSH_HOME>/skills/writing-style-contract` 副本——后者只在带 `.dsh-story-mode.json` 归属标记时才删，绝不会误伤你自己手写的同名技能。不是本包放的东西一律不动。）
 
 ### 一条命令的边界
 
-`ctx.agentPresets.register()` 是**多发布**接口，所以本包**不碰**任何官方行：它插入自己的两行声明——`preset-short-story`（`order: 5`）与 `preset-short-story-lite`（`order: 6`）——都排在官方 standard / ptc / minimal / cordis 之后。0.1.7 以前那种"接管官方 `agent-presets` 行、整体重述它的 config"的代价（官方加字段就被静默抹掉）**已经不存在了**。
+`ctx.agentPresets.register()` 是**多发布**接口，所以本包**不碰**任何官方行：完整版插自己的 6 行声明（`preset-short-story` 与五个 `preset-short-story-review-b1` … `-b5`），精简版插 2 行（`preset-short-story-lite` 与 `preset-short-story-review-merged`），都排在官方 standard / ptc / minimal / cordis 之后。早期版本那种"接管官方 `agent-presets` 行、整体重述它的 config"的代价（官方加字段就被静默抹掉）**已经不存在了**。
 
-两行声明住在**两个补丁文件**里（`cordis.patch.yml` 与 `cordis.lite.patch.yml`），由 `package.json` 的 `dsh.bundle.patch` 一次声明——它是**路径数组**（`@deepseek-ai/dsh-app-boot` 的 `bundlePatchFiles()`：字符串或路径列表都接受），按顺序合并成两层。为什么分开：那份完整版补丁与它周围的校验设施（`scripts/verify-composition.mjs`、`test/preset-contract.test.js`、`story_doctor`）都是按"一个文件一个 preset"写死的，同文件再插一块会让"原预设已被验证"这件事整体失效；分开之后，完整版的检查一字不改地继续守着它，精简版由同一个脚本的 `--preset lite` 档位来守。
+这些声明住在**两个补丁文件**里（`cordis.patch.yml` 与 `cordis.lite.patch.yml`），由 `package.json` 的 `dsh.bundle.patch` 一次声明——它是**路径数组**（`@deepseek-ai/dsh-app-boot` 的 `bundlePatchFiles()`：字符串或路径列表都接受），按顺序合并成两层。为什么分开：那份完整版补丁与它周围的校验设施（`scripts/verify-composition.mjs`、`test/preset-contract.test.js`、`story_doctor`）都是按"一个文件一个模式"写死的，同文件再插一块会让"原预设已被验证"这件事整体失效；分开之后，完整版的检查一字不改地继续守着它，精简版由同一个脚本的 `--preset lite` 档位来守。
 
-剩下两条要记住的：**两个 preset id 必须不同**——`config.id` 撞了会在注册表里抛 `Duplicate agent preset`，而两行的 **loader 行 id 撞了更隐蔽：后者静默覆盖前者**（loader 按行 id 建表、last wins），表现为其中一个模式"莫名其妙不见了"。**声明行是普通条目，可以被用户 patch 覆盖。** profile 的 `cordis.patch.yml`（以及 Web 配置编辑器保存的修改）能按 id `preset-short-story` 或 `preset-short-story-lite` 覆写它的 `config`——而 `config` 是**整体替换**、不是深合并，两层互不影响。所以你改过某个模式的话，升级包**不会**覆盖你的改动；想拿回包里的版本，删掉 profile patch 里那一段再重启。`story_doctor` 会检查这一点。
+剩下几条要记住的：**preset 的 `config.id` 与 loader 行 id 都要成对唯一**——`config.id` 撞了会在注册表里抛 `Duplicate agent preset`（响亮），而 loader 行 id 撞了更隐蔽：后者静默覆盖前者（loader 按行 id 建表、last wins），表现为某个模式或某个审读员"莫名其妙不见了"。**声明行是普通条目，可以被用户 patch 覆盖。** profile 的 `cordis.patch.yml`（以及 Web 配置编辑器保存的修改）能按 id `preset-short-story`、`preset-short-story-lite` 或任一个 `preset-short-story-review-b*` / `preset-short-story-review-merged` 覆写它的 `config`——而 `config` 是**整体替换**、不是深合并，两层互不影响。所以你改过某个模式或某个审读员的话，升级包**不会**覆盖你的改动；想拿回包里的版本，删掉 profile patch 里那一段再重启。`story_doctor` 会检查这一点。
 
 ### 需要什么版本
 
-**DSH 0.1.7-rc.1 及以后。** 更早的 DSH 没有 `@deepseek-ai/dsh-agent-preset` 这个包，本包插入的声明行加载不到——模式不出现，启动日志里留下一条 import 失败。反过来，v1.1.4 及以前的包（覆写 `agent-presets` 行）在 0.1.7 上只会得到一句"patch 目标不存在"的警告，模式与四个工具一起消失。两条路不通用，请按 DSH 版本选包。
+**DSH 0.2.1-rc.1 及以后**（在 0.2.1-rc.2 上实测）。0.2.1 把 `tool-subagent` 的 `persona`、`toolFilter` 与 `backgroundMode` 三个配置项删掉了，孩子的固定人设与工具面改由命名的 agent preset 提供——本包的审读员正是按这个机制组合的。**更早的 DSH 不要用这个版本**：0.1.7 的 `tool-subagent` 没有 `agentPreset` 字段，schema 不认识它会原样留着、运行时又不读，于是审读员工具行会静默退回"孩子加入父代理的 preset"——审读员拿到整套写作工具，只读保证无声失效；同理 0.1.7 的 `tool-fs` 也没有 `write` / `edit` 开关，审读员 preset 里的 `write: false` 不会生效。
+
+**旧包不通用。** v1.5.0 及以前的包在 0.2.1 上会整段失效：那些审读员行还写着旧版的 `persona` 与 `toolFilter`，0.2.1 对这两项是**硬报错**（不是忽略），挂载即抛，父 preset 变 `broken`。两条路不通用，请按 DSH 版本选包。
 
 ### 验证安装
 
@@ -111,7 +124,7 @@ dsh plugin --profile <你的 profile> exec dsh-story-mode cleanup
 dsh plugin --profile <你的 profile> exec dsh-story-mode check
 ```
 
-安装验证请在新会话里让 agent 调用 `story_doctor` —— 它会逐项报告：包是否进了 bundles、`package.json` 是否可解析（带 BOM 会让 DSH 读不出 `dsh.bundle`）、两层 patch 是否各插入了一行声明（`preset-short-story` 与 `preset-short-story-lite`）、子插件行的写法能不能加载、包内模式文件与审读员人设是否齐全、技能根能不能从包内读到、profile patch 有没有覆盖其中任一行；在写作模式里还会**问运行时本身**：roster 里这两个模式在不在、组合是不是 `broken`、本作用域里有哪些技能与 `story_*` 工具。
+安装验证请在新会话里让 agent 调用 `story_doctor` —— 它会逐项报告：包是否进了 bundles、`package.json` 是否可解析（带 BOM 会让 DSH 读不出 `dsh.bundle`）、两层 patch 是否插齐了声明（完整版 1 个主模式 + 5 个审读员 preset，精简版 1 个主模式 + 1 个审读员 preset）、子插件行与 `agentPreset` 指向能不能对上（审读员行必须在主模式行之前）、每个审读员 preset 是不是只有 `persona` + `tool-fs`（`write` / `edit` 关）+ `tool-fs-search` 三行、包内模式文件与审读员人设是否齐全、技能根能不能从包内读到、profile patch 有没有覆盖其中任一行；在写作模式里还会**问运行时本身**：roster 里这两个模式与对应审读员 preset 在不在、组合是不是 `broken`、本作用域里有哪些技能与 `story_*` 工具。模式选择器里应该看到两个写作模式 + 六个「审读员（内部）」条目；后六个只是注册表可见，不要选。
 
 ### 其他安装方式
 
@@ -122,7 +135,7 @@ pnpm add -g github:Furry-wucheng/dsh-story-mode
 # 从源码目录直接开发：打成 tgz 再装进 profile（link 安装也可以，见下面的开发验证）
 git clone https://github.com/Furry-wucheng/dsh-story-mode
 cd dsh-story-mode && pnpm pack        # 得到一个 tgz
-dsh plugin --profile <你的 profile> add ./dsh-story-mode-1.4.0.tgz
+dsh plugin --profile <你的 profile> add ./dsh-story-mode-<version>.tgz
 ```
 
 ### 升级
@@ -133,7 +146,7 @@ dsh plugin --profile <你的 profile> add github:Furry-wucheng/dsh-story-mode
 
 模式与技能都跟着更新——它们都住在包里，没有任何需要手动刷新的副本。
 
-（唯一的例外：你在 profile 的 `cordis.patch.yml` 里按 id `preset-short-story` 或 `preset-short-story-lite` 改过那一行。patch 是整体替换 `config` 的，所以那一份以你的为准——升级不会覆盖它，也不会提醒你。`story_doctor` 会把这种情况报出来。）
+（唯一的例外：你在 profile 的 `cordis.patch.yml` 里按 id `preset-short-story`、`preset-short-story-lite` 或任一个审读员 preset 行改过它的 `config`。patch 是整体替换 `config` 的，所以那一份以你的为准——升级不会覆盖它，也不会提醒你。`story_doctor` 会把这种情况报出来。）
 
 ## 用它
 
@@ -190,7 +203,7 @@ story_bible 的“缺卡候选”仅来自 bible 的“已知事实”清单里�
 新写、续写正文或大幅重写，包括片段：**B1 冷读与 B2 故事逻辑独立审读初稿或实质性改写稿**；B3 阅读体验、B4 文风执行、B5 动作与空间连续性按本次风险派。主代理修改后，只有实质问题或受影响状态链需要交原读者复核；旧报告可能影响判断时才换全新 B1 盲读。各角色独立读稿，不预先看彼此报告。
 一句或一段的纯文字润色由主代理核对上下文，不逐处派审。若一句话改变人物动机、事件因果、视角或重要的动作与物品状态，派对应角色审受影响范围。自查、计数和 lint 不冒充独立审读；需要的报告或复核缺失时标待审。
 
-**精简版（`short-story-lite`）只有一位审读员。** 新稿与实质性改写派 `subagent_review` 一次：它从冷读起点出发（默认只拿正文，不拿人物卡、节拍、大纲与你的写作推理），一遍读完，在一份报告里分五节给出五个维度，每节最多 3 条、每条带原文锚点与影响。复核用 `send_message` 发回同一位读者，只给改动范围与要问的事；一次会话新建的子代理不超过 2 位。它的派发规则写在 `skills-lite/short-story-lite/SKILL.md` 里，不读完整版的审读面板（那份规则对应的是精简版没有的五个角色工具）。
+**精简版（`short-story-lite`）只有一位审读员。** 新稿与实质性改写派 `subagent_review` 一次（调用立即返回 `started subagent <childId>`）：它从冷读起点出发（默认只拿正文，不拿人物卡、节拍、大纲与你的写作推理），一遍读完，在一份报告里分五节给出五个维度，每节最多 3 条、每条带原文锚点与影响。复核用 `send_message` 发回同一位读者，只给改动范围与要问的事；一次会话新建的子代理不超过 2 位。它的派发规则写在 `skills-lite/short-story-lite/SKILL.md` 里，不读完整版的审读面板（那份规则对应的是精简版没有的五个角色工具）。
 
 ### 关系与关键转折
 
@@ -201,11 +214,11 @@ B2 除了核对事实和因果，也会检查重要关系转折是否有读者�
 台词是否自然、人物判断是否可信，也由读者结合上下文检查。闲谈可以存在，紧凑对话也可以成立；年轻人和弱势者同样可能敏锐。字面工具无法替代这类判断。
 
 作者说“我没看懂”时，先核实困惑来自信息顺序、缺少必要依据，还是有意的悬念，再决定修改范围；不预设必须补一整场。
-**审读员是可复用的持久子代理。** 每个角色派发一次就拿到它的 childId；需要复核时用 `send_message` 交给**同一位**读者，只检查相关实质改动。需要排除旧报告影响的最终盲读才另起新读者。派发时不要传 `run_in_background: false`，那会退化成一次性会话，后续消息送不到。
+**审读员是可复用的持久子代理，但 0.2.1 里没有"后台开关"。** 每次派发都是受管的 activation：调用立即返回 `started subagent <childId>`，运行结束后投递一条**结算通知**（含孩子的收尾正文）；没有前台分支，也没有需要你在参数里指定的运行模式。拿到报告后把"角色 → childId"记在当前任务中；需要复核时用 `send_message` 交给**同一位**读者，只检查相关实质改动。需要排除旧报告影响的最终盲读才另起新读者（那是又一个新的 childId）。
 
-这套行为由 preset 的 `backgroundMode: continuable` 加 `send_message` / `list_agents` 两行工具提供；`story_doctor` 会静态检查它们还在不在。
+这套行为由 `tool-subagent` 的受管 activation 加 control 包的 `send_message` / `list_agents` 两行工具提供；`story_doctor` 会静态检查五条委派行的 `agentPreset` 指向、两份 control 行，以及审读员 preset 的只读开关。
 
-**读者数量有配额，所以复用不只是省钱。** DSH 给可续接委派设了一个**存活子代理名额池**：Host 的 `dsh-subagent` 设置 `maxActiveSubagents` 默认 **8**，同一棵可续接父子树共享；池满之后新建或冷恢复会被直接拒绝（`ACTIVATION_LIMIT_REACHED`），那一次派发拿不到报告，只能等已有读者空出来。三条机制值得记牢：**`send_message` 回已驻留的读者复用它的名额**；**一次性运行不占这个池**；**名额只在当前进程里**，限制的是"同时活着的读者数"，不是累计报告数。
+**读者数量有配额，所以复用不只是省钱。** DSH 给委派设了一个**存活子代理名额池**：Host 的 `dsh-subagent` 设置 `maxActiveSubagents` 默认 **8**，同一棵父子树共享；池满之后新建会被直接拒绝（`ACTIVATION_LIMIT_REACHED`），那一次派发拿不到报告，只能等已有读者空出来。三条机制值得记牢：**`send_message` 回已驻留的读者复用它的名额**；**0.2.1 的每一次派发都是受管 activation，都占一个池位**（没有"不占池的一次性分支"可走）；**名额只在当前进程里**，限制的是"同时活着的读者数"，不是累计报告数。
 
 所以本模式自限：**一次会话（一篇文章从接稿到交付）新建的审读子代理不超过 6 位**——B2 一位、B1 一位、B3/B4/B5 合计最多三位、最终盲读一位；通用 `subagent` 最多 1 位。之后的每一次"再读一遍"都是 `send_message` 发回原读者。额度不够时先复用、再借用边界允许的读者，最后在汇总里标"因额度未派 X，该项待审"，**不虚报验收**。
 
@@ -213,22 +226,24 @@ B2 除了核对事实和因果，也会检查重要关系转折是否有读者�
 
 派发预算写在审读面板的第一节；`npm test` 会检查 6 位上限、额度不足时的处置和复用规则。作者需要更多并发时可以在 DSH 的「插件 → 子智能体」里调高 `maxActiveSubagents`，但 6 位自限仍然成立。
 
-| 角色 | 工具 | 可以读取的材料 | 什么时候派 |
-|---|---|---|---|
-| B1 冷读者 | `subagent_review_b1` | 本篇正文；连续阅读可读已发布前文，不读大纲、设定、作者摘要或旧问题 | 新稿与实质性改写；需要排除旧报告影响时换全新读者 |
-| B2 故事逻辑 | `subagent_review_b2` | 正文、作者有效要求、人物卡、节拍、必要前文与设定 | 新稿、续写正文、实质性改写；关系线审读与逻辑同轮，方案阶段不派 |
-| B3 阅读体验 | `subagent_review_b3` | 正文与获准前文；不读大纲、设定与文风契约 | 长篇幅、多场景、结构调整或作者关注节奏时 |
-| B4 文风执行 | `subagent_review_b4` | 正文、作者要求、文风契约（已装进它的人设） | 有明确文风要求，或重点修改口吻、视角、台词与心理时 |
-| B5 动作与空间连续性 | `subagent_review_b5` | 正文、必要前文及明确的身体或物理规则；不读大纲、节拍、主代理的场景状态摘要、文风契约或其他读者报告 | 重要的动作、位置、持物或身体状态链需要独立核对时 |
+| 角色 | 工具 | 只读 preset | 可以读取的材料 | 什么时候派 |
+|---|---|---|---|---|
+| B1 冷读者 | `subagent_review_b1` | `story-review-b1` | 本篇正文；连续阅读可读已发布前文，不读大纲、设定、作者摘要或旧问题 | 新稿与实质性改写；需要排除旧报告影响时换全新读者 |
+| B2 故事逻辑 | `subagent_review_b2` | `story-review-b2` | 正文、作者有效要求、人物卡、节拍、必要前文与设定 | 新稿、续写正文、实质性改写；关系线审读与逻辑同轮，方案阶段不派 |
+| B3 阅读体验 | `subagent_review_b3` | `story-review-b3` | 正文与获准前文；不读大纲、设定与文风契约 | 长篇幅、多场景、结构调整或作者关注节奏时 |
+| B4 文风执行 | `subagent_review_b4` | `story-review-b4` | 正文、作者要求、文风契约（已装进它的人设） | 有明确文风要求，或重点修改口吻、视角、台词与心理时 |
+| B5 动作与空间连续性 | `subagent_review_b5` | `story-review-b5` | 正文、必要前文及明确的身体或物理规则；不读大纲、节拍、主代理的场景状态摘要、文风契约或其他读者报告 | 重要的动作、位置、持物或身体状态链需要独立核对时 |
 
-每次派发记录正文路径和工具给出的内容版本。审读期间暂停修改；回收后核对版本。
+`story-review-b1` … `b5` 是审读员 preset 的 `config.id`：每个角色的固定人设与只读工具面住在那一行声明里，主模式里的五条 `tool-subagent-review-b*` 行用 `agentPreset` 指过去。这些 preset 也会出现在模式选择器里（见「0.2.1 的新代价」），正常使用时不要直接选。
+
+每次派发记录正文路径和工具给出的内容版本。审读期间暂停修改；结算通知到达后核对版本。
 问题位置采用“场景 + 原文短引 + 行号”，主代理追踪改稿后的对应位置。不同版本的段落号不能直接交叉判断。
 
 **需要最终盲读时使用全新读者，只看最新正文。** 初次 B1 已读最终版本、期间没有实质改写时无需重复盲读。读者的困惑是需要核实的证据，也可能是合理悬念。
 
-**审读员不再委派是权限层的限制，"不改文件"是权限层加职责两层。** 每个角色由 preset 里独立的一行 `tool-subagent` 提供，带 `toolFilter`：`read` / `read_image` / `glob` / `grep` / `str_replace_editor`，`write` / `edit` / `present` 与全部委派工具都被 `tools.restrict()` 在这个子代理的 scope 上剥掉。`str_replace_editor` 留着是为了查看长正文——它的 `create` / `str_replace` / `insert` 命令仍在，所以**不要**把审读员说成"物理上无法写入"：只读靠角色职责约束。角色的人设（身份、读什么、报告格式）同样固定在那一行里，由 `!!js` 从 `skills/short-story/references/reviewers/*.md` 读出，所以派发时只给变量、不必重述边界。独立审读无法运行时如实说明，不虚报验收。
+**审读员的只读是组合保证的，不是提示词里的请求。** 每个角色由主模式里独立的一行 `tool-subagent` 提供，`agentPreset` 指向一个只读审读员 preset；那个 preset 的 `config.plugins` 只有三行：`persona`（身份、读什么、报告格式由 `!!js` 从 `skills/short-story/references/reviewers/<角色>.md` 读出）、`tool-fs`（`read` / `read_image` 开，`write` / `edit` 关）、`tool-fs-search`（`glob` / `grep`）。写入、编辑、交付、委派、技能与压缩工具**根本没有挂载**——不是"先注册再用 `restrict()` 剥掉"，而是孩子从一开始就拿不到。所以派发时只给变量、不必重述边界，也不必写"不许改文件"这类请求。独立审读无法运行时如实说明，不虚报验收。
 
-（精简版的审读员名单**故意不含 `str_replace_editor`**：它的命令是 view / create / str_replace / insert，允许它就不是物理只读；而且它的 schema 占一个审读子代理工具面的一半以上（约 2,803 / 5,171 字符），去掉它每次派发少一半工具面。审读只需要读与定位——`read` 已经返回带行号的正文，`glob` / `grep` 负责找。）
+（审读员 preset **故意不挂 `str_replace_editor`**：它的命令是 view / create / str_replace / insert，挂上它就不再是物理只读；而且它的 schema 约占一个审读子代理工具面的一半（约 2,803 / 5,171 字符），去掉它每次派发少一半工具面。审读只需要读与定位——`read` 已经返回带行号的正文，`glob` / `grep` 负责找。审读员 preset 也**不挂 `compaction`**：压缩会在读到一半时改写证据，让报告静默丢掉前半部；宁可上下文撑爆、以 max-tokens 明确失败。）
 
 共用流程和审读面板位于包内的 skills/short-story/references/ 下。复杂规划与准备派发时按需读取相关章节；skill 调用不会自动加载参考文件。文风契约的长篇示例也已移到 references/style-examples.md，只有需要比较写法时读取。
 
@@ -238,14 +253,17 @@ B2 除了核对事实和因果，也会检查重要关系转折是否有读者�
 
 ```
 dsh-story-mode/
-  cordis.patch.yml                  完整版：插入 preset-short-story 声明行（@deepseek-ai/dsh-agent-preset），
-                                    人设、工具、技能、压缩与五位审读员全在那一行的 config.plugins 里
-  cordis.lite.patch.yml             精简版：插入 preset-short-story-lite 声明行，一位合并审读员 +
-                                    更窄的工具面（两层都由 package.json 的 dsh.bundle.patch 数组声明）
+  cordis.patch.yml                  完整版：插入 6 行 preset 声明（@deepseek-ai/dsh-agent-preset）——
+                                    主模式 preset-short-story（order 5）带人设、工具、技能、压缩
+                                    与五条委派行；preset-short-story-review-b1 … -b5（order 101–105）
+                                    是五个只读审读员 preset（人设 + 只读文件工具 + 搜索）
+  cordis.lite.patch.yml             精简版：插入 2 行——主模式 preset-short-story-lite（order 6）
+                                    与合并审读员 preset-short-story-review-merged（order 111）；
+                                    两层都由 package.json 的 dsh.bundle.patch 数组声明
   skills/short-story/               完整版的写作流程技能
     SKILL.md                        写作入口、柔性字数与分级审读
     references/                     writing-workflow.md：人物卡、节拍、成稿与修订；review-panel.md：派发规则与角色触发条件
-      reviewers/                    B1–B5 各自的固定人设（身份、读什么、报告格式），由审读员行读出
+      reviewers/                    B1–B5 各自的固定人设（身份、读什么、报告格式），由对应审读员 preset 的 persona 读出
   skills-lite/
     short-story-lite/SKILL.md       精简版的写作流程与派发规则（规则内联，没有额外的面板文件要读）
     references/reviewer-merged.md   合并审读员的固定人设：冷读起点 + 五个维度 + 报告格式
@@ -259,7 +277,7 @@ dsh-story-mode/
   scripts/verify-composition.mjs    离线组合自检（--preset lite 校验精简版那一层，见「开发验证」）
 ```
 
-**模式是那一行声明，不是目录。** 0.1.7 起预设不再从文件系统发现，所以包里没有 `presets/`：子插件行写在补丁文件里，行名用裸包名 `dsh-story-mode` 指回本包的 `lib/index.js`。完整版的技能根是包内 `skills/`；精简版声明**两个根**——`skills-lite/`（只装精简流程）与 `skills/writing-style-contract/`（单独挂契约，不复制第二份）。skill-filesystem 扫描根时，根下的 `*.md` 文件直接算一个技能，所以第二个根指向契约目录本身即可；好处是精简会话的技能清单里**不会出现**完整版的 `short-story` 技能（否则模型可能加载它，再去找精简版没有的 `subagent_review_b*` 工具）。
+**模式是那一行声明，不是目录。** 预设不再从文件系统发现，所以包里没有 `presets/`：子插件行写在补丁文件里，行名用裸包名 `dsh-story-mode` 指回本包的 `lib/index.js`。审读员同样是声明行——行 id 是 `preset-short-story-review-b*`，`config.id` 是 `story-review-b*`，被主模式的委派行用 `agentPreset` 引用。完整版的技能根是包内 `skills/`；精简版声明**两个根**——`skills-lite/`（只装精简流程）与 `skills/writing-style-contract/`（单独挂契约，不复制第二份）。skill-filesystem 扫描根时，根下的 `*.md` 文件直接算一个技能，所以第二个根指向契约目录本身即可；好处是精简会话的技能清单里**不会出现**完整版的 `short-story` 技能（否则模型可能加载它，再去找精简版没有的 `subagent_review_b*` 工具）。
 
 两个入口是 `exports` 子路径实现的同包多入口。`./doctor` 可以单独挂到**任何**模式里做诊断（例如创造模式），不必连带加载三个写作工具。
 
@@ -269,21 +287,21 @@ dsh-story-mode/
 
 这些都是查过框架源码、并且踩过之后才写下来的：
 
-- **审读员是 `continuable` 子代理，不是一次性调用。** 一次性模式（v1.1.0 及以前）下每轮复核都要再派一位读者，把同一篇正文重新从头读一遍；可复用模式下复核走 `send_message`，子代理带着上一版正文的阅读和自己的报告继续。**坑**：可复用模式里只有后台调用会产生持久 child，前台分支走的是 `subagents.start()`，拿不到 childId——所以技能与审读面板都明令派审读员时不要传 `run_in_background: false`。
-- **五个审读角色各自一行，人设与只读限制都在组合里。** 每个角色是一个独立的 `tool-subagent` 行（`subagent_review_b1` … `b5`）：`persona` 由 `!!js` 从 `references/reviewers/<角色>.md` 读出并装到那个孩子身上，`toolFilter.allow` 只列读类工具，`deny` 拿掉 `write` / `edit` / `present` / 全部委派工具。于是派发时主代理只给变量（路径、版本、范围、改动清单），不再从面板抄模板——抄一次就可能漏一条信息边界。**两个坑**：① `tools.restrict()` 对未知工具名**抛错**，而它抛在孩子的创建窗口里＝那次派发直接失败，所以名单里只能出现本组合真实注册过的工具名；② 审读员人设里**不要**给 `skill` 工具，B4 需要的文风契约在挂载时拼进它自己的 persona。
-- **两个模式住在两层补丁里，这是刻意的。** 完整版那一层与它的校验设施是"一个文件一个 preset"的：`scripts/verify-composition.mjs` 顶层只允许一条 `insert`、且只读 `insert[0]`，`test/preset-contract.test.js` 按整份文件数审读员行数，`story_doctor` 只读 `<包根>/cordis.patch.yml`。把精简版塞进同一份文件，等于让"原预设已被验证"这件事整体失效。拆成两层之后，完整版的检查原样守着它，精简版由同一个脚本的 `--preset lite` 档位守。**两个坑**：`config.id` 撞了会在注册表里抛 `Duplicate agent preset`（响亮），而**两行的 loader 行 id 撞了是静默的**——loader 按行 id 建表、后面的覆盖前面的，表现为其中一个模式无声消失，所以 id 必须成对唯一（`preset-short-story` / `preset-short-story-lite`）。
+- **委派在 0.2.1 里是受管 activation，不是"可复用的后台会话"开关。** 每次 `subagent_review_*` 调用都立即返回 `started subagent <childId>`，运行完投递一条结算通知（含孩子的收尾正文）；没有前台分支，也没有要在参数里指定的运行模式。所以技能与审读面板的第一条规则是：记下 childId，结算通知到了再改稿；复核用 `send_message` 发回同一个 id，孩子带着上一版的阅读和自己写过的报告继续，不必重读全文。**历史**：v1.1.0 及以前的包是"每次复核再派一位读者"，同一篇正文要重读一遍；这个代价在可续接机制之后才消掉。
+- **五个审读角色各占一行声明，人设与只读工具面都在组合里。** 每个角色是一个独立的 `@deepseek-ai/dsh-agent-preset` 行（`config.id: story-review-b1` … `b5`，`order: 101`–`105`），`config.plugins` 恰好三行：`persona`（由 `!!js` 从 `references/reviewers/<角色>.md` 读出并装到那个孩子身上，B4 另拼文风契约）、`tool-fs`（`write: false` / `edit: false` 是必填项——不写就默认可写）、`tool-fs-search`；主模式里的 `tool-subagent-review-bN` 行只写 `provider` / `toolName` / `agentPreset`。于是派发时主代理只给变量（路径、版本、范围、改动清单），不再从面板抄模板——抄一次就可能漏一条信息边界。**三个坑**：① 审读员 preset 行必须排在主模式行**前面**——`tool-subagent` 在挂载时校验 `agentPreset` 指向的声明存在，顺序反了整行变 `broken`；② 审读员 preset 不挂 `compaction`：压缩会在读到一半时改写证据，报告会静默丢掉前半部；③ 审读员人设里**不要**指望 `skill` 工具——那个插件根本没有挂载，B4 需要的文风契约在挂载时已拼进它自己的 persona。
+- **两个模式住在两层补丁里，这是刻意的。** 完整版那一层与它的校验设施是"一个文件一个模式"的：`scripts/verify-composition.mjs` 顶层只允许一条 `insert`，`test/preset-contract.test.js` 按整份文件数审读员 preset 行数，`story_doctor` 只读 `<包根>/cordis.patch.yml`。把精简版塞进同一份文件，等于让"原预设已被验证"这件事整体失效。拆成两层之后，完整版的检查原样守着它，精简版由同一个脚本的 `--preset lite` 档位守。**两个坑**：`config.id` 撞了会在注册表里抛 `Duplicate agent preset`（响亮），而 **loader 行 id 撞了是静默的**——loader 按行 id 建表、后面的覆盖前面的，表现为某个模式或某个审读员无声消失，所以 id 必须成对唯一（`preset-short-story` / `short-story`，`preset-short-story-review-bN` / `story-review-bN`，`preset-short-story-lite` / `short-story-lite`，`preset-short-story-review-merged` / `story-review-merged`）。
 - **精简版是一位"合并审读员"，不是"少派几位角色"。** 审读子代理独立 spawn、零继承上下文，所以每个孩子的固定成本里最大的一项是**再读一遍正文**：10,000 字中文稿的 `read`（带行号）约 12,000 字符，五个人就是五遍。合并版把五维（冷读困惑、故事逻辑与关系依据、阅读体验与节奏、文风契约执行、动作与空间连续性）放进同一遍阅读与同一份报告，**代价要说清楚**：五位读者之间的交叉验证与冗余没有了，B5 的独立状态重建、B3 的独立节奏判断都由同一位读者给出。补偿手段是"冷读起点"（默认只给正文，不给人物卡与大纲），以及**另开一个完整版会话**做交付级审读——预设是会话级选择，中途不能切换。
-- **精简版砍掉的是工具面，不是写作能力。** 常驻工具 schema 是每轮前缀里最大的一块（完整版 28 个工具约 22,259 字符 ≈ 5,565 token/轮，而它自己的写作人设只有 873 字符），所以精简版把 4 个角色工具合并成 1 个、去掉 `tool-web`（2 个工具）与 `tool-goal`（3 个工具）。`command-goal` 保留：斜杠命令不进工具面，长稿仍能用 `/goal` 定目标。四个 `story_*` 工具、压缩、精确编辑器、技能与文风契约一个不动——省的是重复读和每轮的 schema，不是写作与自查能力。
+- **精简版砍掉的是工具面，不是写作能力。** 常驻工具 schema 是每轮前缀里最大的一块（完整版 28 个工具约 22,300 字符 ≈ 5,600 token/轮，这是按已装构建估算的数、误差约 ±15%；而它自己的写作人设只有 873 字符），所以精简版把 4 个角色工具合并成 1 个、去掉 `tool-web`（2 个工具）与 `tool-goal`（3 个工具）。`command-goal` 保留：斜杠命令不进工具面，长稿仍能用 `/goal` 定目标。四个 `story_*` 工具、压缩、精确编辑器、技能与文风契约一个不动——省的是重复读和每轮的 schema，不是写作与自查能力。
 - **写作模式故意不开 `subagent_fork`。** fork 继承主代理的全部上下文（大纲、写作推理、修改理由）；读者看过作者的底牌之后，“我没看懂”就不再是读者证据。审读员也因此不开子级模型选择，一律与主代理同路由。
 - **技能根由 preset 声明，所以这些技能只在这两个写作模式里生效。** 完整版挂包内 `skills/`（写作流程 + 文风契约），精简版挂 `skills-lite/` 与 `skills/writing-style-contract/`；路径由各行的 `customSkillDirs` 在运行时从包内算出来，注册落进各自 preset 那一层，所以模式与技能永远同进同出。它们**故意不**放进 `<DSH_HOME>/skills`：那是用户根（rank 400），而每个 preset 自己挂的 skill-filesystem 实例都会扫它（`includeDefaultRoots` 默认 true）——放进去等于让它们出现在所有模式里，包括编码会话，而它们只属于写作模式。
-- **写作模式保留了搜索工具（`glob` / `grep`）。** shell、计划模式、后台任务、工作流、多级委派都拆掉了，但"找"不能拆：系列连载里核对名字与细节靠搜，不靠通读。这一行要注意 `sampleOverCapGlobResults` 在 framework 侧是**必填**配置（`z.boolean().required()`），漏了它整个 preset 会挂不上。
-- **preset 是普通 loader 行，注册表不扫描目录。** `@deepseek-ai/dsh-agent-preset` 的一行 = 一个预设：`config.id` 是会话保存的标识符，`config.plugins` 是子插件列表。插入用 bundle patch 的 `insert` 层，不碰官方任何一行。**坑**：子行的 `name` 必须是字符串，且解析基准是 **profile 目录**——所以本包自己的行写裸包名，包内文件路径一律用 `createRequire(baseUrl)` 在运行时问出来（`baseUrl` 是解析锚点，不是路径基准）。
+- **写作模式保留了搜索工具（`glob` / `grep`）。** shell、计划模式、后台任务、工作流、多级委派都拆掉了，但"找"不能拆：系列连载里核对名字与细节靠搜，不靠通读。这一行要注意 `sampleOverCapGlobResults` 在 framework 侧是**必填**配置（`z.boolean().required()`），漏了它整个 preset 会挂不上；审读员 preset 的 `tool-fs-search` 行同理，漏了它那个审读员 preset 会挂不上。
+- **preset 是普通 loader 行，注册表不扫描目录。** `@deepseek-ai/dsh-agent-preset` 的一行 = 一个预设：`config.id` 是引用它的标识符，`config.plugins` 是子插件列表。插入用 bundle patch 的 `insert` 层，不碰官方任何一行。**坑**：子行的 `name` 必须是字符串，且解析基准是 **profile 目录**——所以本包自己的行写裸包名，包内文件路径一律用 `createRequire(baseUrl)` 在运行时问出来（`baseUrl` 是解析锚点，不是路径基准）。**注册表没有隐藏字段**：审读员 preset 同样是普通条目，会出现在模式选择器里（`order: 101+`、名字带「内部」、描述写明不要直接选）——这是 DSH 0.2.1 机制的直接结果，不是本包的偏好；选错只得到一个只读阅读器，稿件不会被改。详见前面的「0.2.1 的新代价」。
 - **`insert` 里的相对路径会被启动器改写，`config.plugins` 里的不会。** 启动器只把 `insert` 条目（及其嵌套分组）中形如 `/绝对路径`、`./`、`../` 的**行名**转成相对 patch 文件的 file URL；子插件行的名字不在这个改写范围内。这就是为什么本包用裸包名，而不是 `./lib/index.js`。
 - **`!!js` 后面若是折叠标量，整段代码会压成一行。** 所以那段 JavaScript 里不能有 `//` 行注释（一个就吃掉后面全部），也不能靠自动分号插入。这两条都是实测踩出来的（本包现在把这类表达式写成单行双引号标量）。
 - **双引号 `!!js` 里不要出现反斜杠转义。** YAML 先处理转义，`'\n'` 会变成真换行、JS 源码跨行；需要换行写 `String.fromCharCode(10)`。`story_doctor` 与 `npm run verify` 都有针对这一条的检查。
 - **`createRequire` 的锚点必须按文件 URL 给。** 给它一个不带尾斜杠的目录路径，Node 会把该目录当成文件解析，直接 MODULE_NOT_FOUND。preset 树的 `baseUrl` 带尾斜杠，所以直接可用。
 - **`package.json` 不能有 BOM。** 带 BOM 会让 `JSON.parse` 失败，DSH 因此读不出 `dsh.bundle` 声明，`dsh plugin add` 不会把包加进 profile 的 bundles，patch 永远不生效——表现为"装好了但模式不出现"。这个坑本包也踩过一次，`story_doctor` 里有常驻检查（`package.json 无 BOM` 那一项）。
-- **升级包之后要确认模式真的换了。** 你改的是**哪一份包**决定模式的行为：从 GitHub 装的（`dsh plugin --profile <name> add github:<作者>/dsh-story-mode`）取的是远端默认分支，本地改动没推上去就不会生效。更隐蔽的一种：早期版本或插件市场留下过一份 profile 里的包快照，`dsh plugin remove` 之后**不会**自动删掉它——它可能还留在 `node_modules` 与插件目录里，于是"装了新版但模式没变"。判断办法是看模式里有没有 `subagent_review_b1` 这个工具；清理由市场或手动删除那份快照完成（本包的 `cleanup` 脚本只处理 home 下的技能副本与旧模式副本）。开发期用 `link:` 装本地目录时，源码改动**立刻生效**，但改完要重启 profile。
+- **升级包之后要确认模式真的换了。** 你改的是**哪一份包**决定模式的行为：从 GitHub 装的（`dsh plugin --profile <name> add github:<作者>/dsh-story-mode`）取的是远端默认分支，本地改动没推上去就不会生效。更隐蔽的一种：早期版本或插件市场留下过一份 profile 里的包快照，`dsh plugin remove` 之后**不会**自动删掉它——它可能还留在 `node_modules` 与插件目录里，于是"装了新版但模式没变"。判断办法是看模式里有没有 `subagent_review_b1` 这个工具，或者模式选择器里有没有六个「审读员（内部）」条目；清理由市场或手动删除那份快照完成（本包的 `cleanup` 脚本只处理 home 下的技能副本与旧模式副本）。开发期用 `link:` 装本地目录时，源码改动**立刻生效**，但改完要重启 profile。
 - **本包零运行时依赖**（连 `schemastery` 都没有）。ESM 的解析基准是加载入口的父路径，所以插件若 `import` 任何 `@deepseek-ai/*` 包就必须自带 `node_modules`；它什么都不 import，于是任何布局下都能加载。**改代码时不要引入裸导入。**
 
 以下是旧版审读规则的实测记录，用来说明独立读者为什么需要检查关系转折，也记录了当时过于严格的处理方式；当前版本以本页前面的分级审读和正文证据为准。
@@ -333,11 +351,11 @@ dsh-story-mode/
 
 ### 安装会改动你的 home 目录吗
 
-**不会。** `dsh plugin add` 只写 profile 的 `package.json`、`node_modules` 与 patch 层：两个模式都是包内补丁插入的声明行，技能由各行从包内挂载，两层补丁都由 `package.json` 的 `dsh.bundle.patch` 数组声明。`<DSH_HOME>/skills/` 与 `<DSH_HOME>/.agent-presets/` 都不碰，也没有需要用户去批准的构建脚本（pnpm 默认就会拦截依赖的生命周期脚本，本包不依赖它）。
+**不会。** `dsh plugin add` 只写 profile 的 `package.json`、`node_modules` 与 patch 层：两个模式与它们各自的审读员都是包内补丁插入的声明行，技能由各行从包内挂载，两层补丁都由 `package.json` 的 `dsh.bundle.patch` 数组声明。`<DSH_HOME>/skills/` 与 `<DSH_HOME>/.agent-presets/` 都不碰，也没有需要用户去批准的构建脚本（pnpm 默认就会拦截依赖的生命周期脚本，本包不依赖它）。
 
-`cleanup` 是唯一会写你 home 的命令，而且只**删**本包自己留下的东西：指向本模式的用户默认值（0.1.7 起是 profile patch 里 `selectedDefault` 那一行）、v1.0.1 的模式副本、带 `.dsh-story-mode.json` 归属标记的技能副本。不是本包放的一律不动。
+`cleanup` 是唯一会写你 home 的命令，而且只**删**本包自己留下的东西：指向本模式的用户默认值（现在是 profile patch 里 `selectedDefault` 那一行）、v1.0.1 的模式副本、带 `.dsh-story-mode.json` 归属标记的技能副本。不是本包放的一律不动。
 
-**注意**：v1.0.1 把模式**复制**进 `<DSH_HOME>/.agent-presets/short-story`。0.1.7 不再从目录发现预设，所以那一份已经不参与加载，但留着会让人以为"改了包内文件模式却没变"。`check` 会报出来，`cleanup` 会清掉。
+**注意**：v1.0.1 把模式**复制**进 `<DSH_HOME>/.agent-presets/short-story`。现在的 preset 注册表不再从目录发现预设，所以那一份已经不参与加载，但留着会让人以为"改了包内文件模式却没变"。`check` 会报出来，`cleanup` 会清掉。
 
 ---
 
@@ -363,10 +381,10 @@ npm run verify:full   # 只查 cordis.patch.yml
 npm run verify:lite   # 只查 cordis.lite.patch.yml（--preset lite）
 ~~~
 
-回归测试覆盖分场、引号统计、工具提示、人物卡和卸载检查，也验证审读角色各自成行、只读权限、按改动风险派发、关系转折审读与逻辑审读同轮、纯文字小改免复审、文风匹配发生在动笔前且不落成条目，以及近似字数的柔性规则。组合测试继续检查 0.1.7 的 patch 形态、包内路径和技能挂载。测试只使用内存稿件和临时 DSH 主目录，不修改真实用户设置。
+回归测试覆盖分场、引号统计、工具提示、人物卡和卸载检查，也验证审读员 preset 各自成行且只读、按改动风险派发、关系转折审读与逻辑审读同轮、纯文字小改免复审、文风匹配发生在动笔前且不落成条目，以及近似字数的柔性规则。组合测试检查 patch 形态（`insert` 层、行名、`agentPreset` 指向与行序）、包内路径和技能挂载。测试只使用内存稿件和临时 DSH 主目录，不修改真实用户设置。
 `npm run check` 与 CLI `check` 都是卸载残留检查，不是单元测试或完整安装验证。
 
-`npm run verify` 补上单元测试碰不到的那一半：它用 **loader 自己的解析器**（js-yaml + `entryListSchema`）交叉验证组合，对每个 `!!js` 表达式做编译**与求值**检查（求值环境按运行时的样子搭：临时目录里造一个 `node_modules/dsh-story-mode` 指回仓库，`baseUrl` 指向它），用插件自己的 `Config` 校验每行 config，并把 `toolFilter` 点名的工具与**插件源码里真正注册过的名字**对账；`--preset lite` 档位用同一套纪律查精简版那一层（一个合并审读员、两个技能根、只读名单不含写入类工具、`tool-web` / `tool-goal` 确实不在），默认档位查完整版（五个角色行、五份人设、两份技能）。
+`npm run verify` 补上单元测试碰不到的那一半：它用 **loader 自己的解析器**（js-yaml + `entryListSchema`）交叉验证组合，对每个 `!!js` 表达式做编译**与求值**检查（求值环境按运行时的样子搭：临时目录里造一个 `node_modules/dsh-story-mode` 指回仓库，`baseUrl` 指向它），用插件自己的 `Config` 校验每行 config，并把每个 `agentPreset` 指向与审读员 preset 的声明逐条对账（目标必须存在、审读员 preset 只挂读取与定位工具、`tool-fs` 的 `write` / `edit` 是关的）；`--preset lite` 档位用同一套纪律查精简版那一层（一个合并审读员、两个技能根、只读工具面不含写入类工具、`tool-web` / `tool-goal` 确实不在），默认档位查完整版（五个审读员 preset、五份人设、两份技能）。
 它需要能读到 harness 已安装的插件（仓库本身零依赖）：
 
 ~~~sh
@@ -377,13 +395,13 @@ DSH_HARNESS=<harness 目录> npm run verify
 # 先解包再指过去（解包脚本见仓库外的任意 asar 工具），或用能读 asar 的运行时跑
 ~~~
 
-两件它**不能**代替的事：真实会话里的工具清单，以及子代理真的能起来。装好后请开一个会话跑一次新写或片段：完整版里确认 `subagent_review_b1` … `subagent_review_b5` 五个工具都在、派一次能拿到 `started subagent <childId>`；精简版里确认只有 `subagent_review` 一个审读工具、而且它派出去的孩子工具面里**没有** `str_replace_editor`。
+两件它**不能**代替的事：真实会话里的工具清单，以及子代理真的能起来。装好后请开一个会话跑一次新写或片段：完整版里确认 `subagent_review_b1` … `subagent_review_b5` 五个工具都在、派一次能拿到 `started subagent <childId>`；精简版里确认只有 `subagent_review` 一个审读工具。两个模式都要看一眼孩子侧的工具面：只有 `read` / `read_image` / `glob` / `grep`，**没有** `str_replace_editor`，也没有写入、编辑、交付、委派工具——这就是"组合保证只读"的样子。
 
 ### 为什么 `!!js` 里不能写 `'\n'`
 
 `!!js` 的值在组合里是 **YAML 双引号标量**，YAML 会先处理转义：`'\n'` 在 loader 拿到源码之前就变成了真正的换行，于是 JS 里出现跨行的字符串字面量 → `SyntaxError: Invalid or unexpected token`。
 
-v1.1.3 正是栽在 B4 那一行的换行拼接上（另外六个 `!!js` 不含转义，所以只有它炸）。当时的后果特别难查：旧版 roster 在**挂载期**才求值，抛错回滚整次 agent 创建，表现为"点新会话没反应"，而 roster 里 `broken` 仍是 `null`。0.1.7 把这类失败变响了——预设在启动时提前挂载，任何一行失败都会让 roster 里那一条带上 `broken` 文案，`story_doctor` 直接把它打印出来。
+v1.1.3 正是栽在 B4 那一行的换行拼接上（另外六个 `!!js` 不含转义，所以只有它炸）。当时的后果特别难查：旧版 roster 在**挂载期**才求值，抛错回滚整次 agent 创建，表现为"点新会话没反应"，而 roster 里 `broken` 仍是 `null`。现在预设在启动时提前挂载，任何一行失败都会让 roster 里那一条带上 `broken` 文案，`story_doctor` 直接把它打印出来。
 
 结论：需要换行就写 `String.fromCharCode(10)`。`npm run verify` 会把这类写法拦下来（交叉验证比对两种解析结果 + 对双引号标量里的反斜杠做预防性检查），`story_doctor` 也会静态检查一遍。
 

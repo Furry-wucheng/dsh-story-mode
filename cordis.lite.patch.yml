@@ -1,23 +1,37 @@
 # dsh-story-mode 的第二层补丁 —— 「短篇小说模式（精简）」。
 #
-# 这一层和 cordis.patch.yml **互不依赖**：那一层声明 preset `short-story`（完整版，
-# 五位角色化审读员），这一层声明 preset `short-story-lite`（精简版，一位合并审读员）。
-# 两层都由本包自己的 package.json 声明（`dsh.bundle.patch` 是路径数组，见
-# `@deepseek-ai/dsh-app-boot` 的 `bundlePatchFiles()`：字符串或路径列表都接受），
-# 所以装包 = 两个模式一起出现，卸载包 = 两层一起消失。
+# 这一层和 cordis.patch.yml **互不依赖**：那一层声明完整版（五位角色化审读员），
+# 这一层声明精简版（一位合并审读员）。两层都由本包自己的 package.json 声明
+# （`dsh.bundle.patch` 是路径数组，见 `@deepseek-ai/dsh-app-boot` 的
+# `bundlePatchFiles()`：字符串或路径列表都接受），所以装包 = 两个模式一起出现，
+# 卸载包 = 两层一起消失。
 #
 # ── 为什么另起一个文件，而不是往 cordis.patch.yml 里再插一块 ──────────────────
 #
-# 因为那份文件与它周围的校验设施是**按"一个文件一个 preset"写死的**：
+# 因为那份文件与它周围的校验设施是**按"一个文件一个模式"写死的**：
 #
-#   * `scripts/verify-composition.mjs` 在 :553/:559 直接 die——顶层只允许 1 条
-#     insert、insert 里只允许 1 行，之后所有检查只读 `insert[0]`；
-#   * `test/preset-contract.test.js` 在 :118 按**整份文件**数 `toolFilter` 必须正好 5 个；
-#   * `lib/doctor.js` 只读 `<包根>/cordis.patch.yml`。
+#   * `scripts/verify-composition.mjs` 默认档位只守完整版，`--preset lite` 档位才读
+#     这一层；
+#   * `test/preset-contract.test.js` 按整份文件数审读员行；
+#   * `lib/doctor.js` 对两层各查一遍。
 #
-# 同文件再插一块会让"原预设已被验证"这件事整体失效，而把精简版放进自己的文件，
-# 上面这些检查一字不改地继续守着完整版——精简版由同一个脚本的 `--preset lite`
-# 档位来守。这是本次拆分对原预设**唯一**的承诺：原文件不动，它的验证不动。
+# 同文件再插一块会让"原预设已被验证"这件事整体失效。把精简版放进自己的文件，
+# 完整版由默认档位守、精简版由 `--preset lite` 档位守，两层互不干扰。
+#
+# ── 0.2.1 的机制（与 cordis.patch.yml 相同，细节见那份文件头）─────────────────
+#
+# 0.2.1 的 `@deepseek-ai/dsh-tool-subagent` 不再接受 `persona` / `toolFilter` /
+# `backgroundMode`：孩子的人设与工具面必须写在一个命名的 agent preset 里，工具行
+# 只写 `agentPreset: <id>`。所以这一层同样是"角色 preset 行 + 主模式行"：
+#
+#   * `preset-short-story-review-merged`（order 111）  一位合并审读员，只读组合
+#   * `preset-short-story-lite`（order 6）             精简主模式
+#
+# 角色行必须排在主模式行**前面**：`tool-subagent` 在挂载时校验 `agentPreset` 指向
+# 的声明存在。精简版审读员的只读同样是**组合**保证的：只挂 `tool-fs`（write/edit
+# 关闭）与 `tool-fs-search`，写入、编辑、交付、委派工具根本没有挂载——旧版
+# `toolFilter.allow` 不含 `str_replace_editor` 是同一个目标，现在不再需要
+# `restrict()` 名单。
 #
 # ── 精简版到底精简了什么（都是有依据的，改之前先读）─────────────────────────
 #
@@ -27,11 +41,9 @@
 #     ≈ 74k token）；一位读者一次读完五维，约 24,000 字符（≈ 17k token）。
 #     省下来的不是"读得浅"，是四遍重复读。
 #
-# 二、审读员的 `toolFilter.allow` **不含 `str_replace_editor`**。理由有两条，
-#     都在源码里：
-#       * 它的命令是 view / create / str_replace / insert——允许它等于"审读员物理上
-#         可写"，与"只读审读员"的说法不符（review-panel.md 里那句"写入已被
-#         tools.restrict 剥掉"在完整版里其实并不准确）；
+# 二、审读员 preset 里**没有** `tool-str-replace-editor`。理由有两条：
+#       * 它的命令是 view / create / str_replace / insert——挂上它等于"审读员物理上
+#         可写"，与"只读审读员"的说法不符；
 #       * 它的 schema 是 2,803 字符，占一个审读子代理工具面（5,171 字符）的 54%，
 #         而审读员只需要读：`read` 已经返回带行号的正文，`glob` / `grep` 负责定位。
 #     所以精简版的审读员是真的只读，而且每次派发少 2,803 字符。
@@ -65,19 +77,60 @@
 #   `story_doctor` 的静态检查与 `scripts/verify-composition.mjs --preset lite`
 #   都覆盖这一层：前者在会话里查，后者在提交前查。
 #
-# ── 这一行同样可以被用户 patch 覆盖 ─────────────────────────────────────────
+# ── 这些行同样可以被用户 patch 覆盖 ────────────────────────────────────────
 #
-# 声明行是普通条目：profile 的 `cordis.patch.yml` 可以按 id `preset-short-story-lite`
-# 覆写它的 `config`（`config` 是整体替换）。两个 id 互不影响——改精简版不会动完整版。
+# 声明行是普通条目：profile 的 `cordis.patch.yml` 可以按 id 覆写它的 `config`
+# （`config` 是整体替换）。`preset-short-story-lite` 与
+# `preset-short-story-review-merged` 互不影响——改精简版不会动完整版。
 
 - insert:
+    # ── 一位合并审读员（只读组合）────────────────────────────────────────────
+    #
+    # 人设 = 合并审读员说明 + 文风契约全文：
+    #   * 契约必须拼在角色说明后面——这个顺序沿用完整版 B4 的做法
+    #     （`skills/short-story/references/reviewers/b4-style-execution.md`
+    #     要求"先读作者要求、再完整读正文、最后对照契约"），而 persona 在
+    #     system prompt 最前、正文才是用户消息，顺序天然正确；
+    #   * 契约是共用文件，这里只是读它，不复制：改契约，两个模式同时生效；
+    #   * 契约正文里"冷读者不读本契约"那一句描述的是完整版的五人分工
+    #     （B1 冷读、B4 文风）；精简版把两者并成同一位读者，所以合并人设里
+    #     明确写了契约是**尺子**：先读完再对照，不用它预判其它四个维度。
+    #
+    # 只挂 `tool-fs`（read/read_image）与 `tool-fs-search`（glob/grep）：没有写、
+    # 编辑、交付、委派工具，审读员是物理只读的。参数与完整版角色一致。
+    - id: preset-short-story-review-merged
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: story-review-merged
+        name: 短篇审读员 · 合并五维（内部）
+        description: 由「短篇小说模式（精简）」派发使用的只读审读角色；不要直接选择这个模式。
+        order: 111
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: !!js "(() => { const m = process.getBuiltinModule('node:module'); const p = process.getBuiltinModule('node:path'); const f = process.getBuiltinModule('node:fs'); const root = p.dirname(m.createRequire(baseUrl).resolve('dsh-story-mode/package.json')); const role = f.readFileSync(p.join(root, 'skills-lite', 'references', 'reviewer-merged.md'), 'utf8'); const contract = f.readFileSync(p.join(root, 'skills', 'writing-style-contract', 'SKILL.md'), 'utf8'); return role + String.fromCharCode(10) + contract; })()"
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              readImage: true
+              write: false
+              edit: false
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+
+    # ── 主模式（精简）───────────────────────────────────────────────────────
+    #
+    # 完整版占 5，精简版排在它后面；审读员角色（order 111）排在最后。
     - id: preset-short-story-lite
       name: '@deepseek-ai/dsh-agent-preset'
       config:
         id: short-story-lite
         name: 短篇小说模式（精简）
         description: 小说创作与改稿的精简档：一位合并审读员一次读完五个维度，不派角色化面板；常驻工具面与每轮前缀更窄，长会话省得多。完整审读请用「短篇小说模式」。
-        # 完整版占 5，精简版排在它后面。
         order: 6
         plugins:
           # ── 身份 ────────────────────────────────────────────────────────────
@@ -97,7 +150,7 @@
 
                 写正文或改稿前加载 `short-story-lite` 与 `writing-style-contract`：流程、篇幅规则与派发细则都写在精简技能里，没有额外的面板文件要读。不要加载完整版的 `short-story` 技能，它的派发规则对应的是本模式没有的角色工具。
 
-                独立审读只有一位读者，工具是 `subagent_review`，角色人设与只读限制已经在它身上：新稿与实质性改写派它一次，它冷读全文、在一份报告里覆盖五个维度；复核用 `send_message` 发回它，只给改动范围。只读、额度与验收细则见技能。
+                独立审读只有一位读者，工具是 `subagent_review`，角色人设与只读限制已经写进它挂载的只读 preset 里：新稿与实质性改写派它一次，它冷读全文、在一份报告里覆盖五个维度；复核用 `send_message` 发回它，只给改动范围。只读、额度与验收细则见技能。
 
                 **若你是被委派的审读员：只执行派发任务。** 不读技能、不改文件、不再委派；只读派发消息列出的材料。
 
@@ -188,42 +241,27 @@
           # ── 委派：一位合并审读员 + 一个通用出口 ─────────────────────────────
           #
           # 通用出口留着是有意的：作者说"再找一双眼睛"时，它是会话里唯一还能多要
-          # 一位读者的地方（预设是会话级选择，中途换模式要另开会话）。
+          # 一位读者的地方（预设是会话级选择，中途换模式要另开会话）。它不写
+          # `agentPreset`，孩子加入父代理当前的预设修订——也就带着整套写作工具，
+          # 适合查资料、核对设定这类不属于独立审读的活。
           - id: tool-subagent
             name: '@deepseek-ai/dsh-tool-subagent'
             config:
               provider: spawn
               toolName: subagent
-              backgroundMode: continuable
 
-          # **一位读者，五个维度。** 人设 = 合并审读员说明 + 文风契约全文：
-          #   * 契约必须拼在角色说明后面——这个顺序沿用完整版 B4 的做法（
-          #     `skills/short-story/references/reviewers/b4-style-execution.md`
-          #     要求"先读作者要求、再完整读正文、最后对照契约"），而 persona 在
-          #     system prompt 最前、正文才是用户消息，顺序天然正确；
-          #   * 契约是共用文件，这里只是读它，不复制：改契约，两个模式同时生效；
-          #   * 契约正文里"冷读者不读本契约"那一句描述的是完整版的五人分工
-          #     （B1 冷读、B4 文风）；精简版把两者并成同一位读者，所以合并人设里
-          #     明确写了契约是**尺子**：先读完再对照，不用它预判其它四个维度。
+          # **一位读者，五个维度。** 人设 = 合并审读员说明 + 文风契约全文，见上面的
+          # `preset-short-story-review-merged`。工具面由那个 preset 决定：只有
+          # read / read_image / glob / grep，真的只读。
           #
-          # `toolFilter.allow` 只有读取与定位：`read` / `read_image` / `glob` / `grep`。
-          # **`str_replace_editor` 不在里面**——它带 create / str_replace / insert
-          # 命令，允许它就不是只读审读员；而且它的 schema 占这个子代理工具面的
-          # 一半以上，去掉它每次派发省 2,803 字符。`restrict()` 对未注册的工具名
-          # 抛错，所以这里只列本组合真实存在的名字。
-          #
-          # 后台派发（省略 `run_in_background`）：可续接模式下前台调用退化为一次性
-          # 会话，拿不到 childId，复核就没法发回同一位读者。
+          # 0.2.1 每次调用都是后台受管 activation，没有 `run_in_background` 参数：
+          # 调用立即返回 childId，结束时投递结算通知（含孩子的收尾正文）。
           - id: tool-subagent-review
             name: '@deepseek-ai/dsh-tool-subagent'
             config:
               provider: spawn
               toolName: subagent_review
-              backgroundMode: continuable
-              toolFilter:
-                allow: [read, read_image, glob, grep]
-                deny: [write, edit, present, subagent, send_message, interrupt_agent, list_agents]
-              persona: !!js "(() => { const m = process.getBuiltinModule('node:module'); const p = process.getBuiltinModule('node:path'); const f = process.getBuiltinModule('node:fs'); const root = p.dirname(m.createRequire(baseUrl).resolve('dsh-story-mode/package.json')); const role = f.readFileSync(p.join(root, 'skills-lite', 'references', 'reviewer-merged.md'), 'utf8'); const contract = f.readFileSync(p.join(root, 'skills', 'writing-style-contract', 'SKILL.md'), 'utf8'); return role + String.fromCharCode(10) + contract; })()"
+              agentPreset: story-review-merged
 
           - id: tool-subagent-control
             name: '@deepseek-ai/dsh-tool-subagent-control'
